@@ -10,10 +10,14 @@ import { startApp } from "@opt2-tealbrick/miniapp-sdk";
 import { app, manifest } from "./src/app.ts";
 
 export default async function start(env: Record<string, string>): Promise<{ url: string; stop(): Promise<void>; backupNow(): Promise<void> }> {
-  const harness = env.TBCONF_PORTAL_ROOT_KEYS ? ({ portalRootKeys: JSON.parse(env.TBCONF_PORTAL_ROOT_KEYS) } as Parameters<typeof startApp>[2]) : undefined;
+  // Port: the suite's free port (TBCONF_PORT, conformance >= 0.1.13), else manifest runtime.port.
+  const harness = {
+    ...(env.TBCONF_PORTAL_ROOT_KEYS ? { portalRootKeys: JSON.parse(env.TBCONF_PORTAL_ROOT_KEYS) } : {}),
+    port: env.TBCONF_PORT ? Number(env.TBCONF_PORT) : manifest.runtime.port,
+  } as Parameters<typeof startApp>[2];
   const running = await startApp(app, { TB_DATA_EPHEMERAL: "1", ...env }, harness);
   return {
-    url: `http://127.0.0.1:${manifest.runtime.port}`,
+    url: `http://127.0.0.1:${running.port}`,
     stop: () => running.stop(),
     backupNow: async () => {
       await running.backups.runNow();
