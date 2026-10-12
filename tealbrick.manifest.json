@@ -4,7 +4,7 @@
   "id": "inbox",
   "name": "Operator Inbox",
   "summary": "One queue where your agents ask you questions and request approvals, with the full history and every pending approval in one list.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "sdkMajor": 1,
   "publisher": {
     "name": "Teal Brick"
@@ -1496,7 +1496,7 @@
     {
       "id": "alerts_set",
       "title": "Change alert settings",
-      "description": "Turn the owner alert DM on or off. The DM goes out through Connect and may wait for the owner's approval there.",
+      "description": "Turn the owner alert DM on or off. The DM goes out through Connect. Only the first DM to a new person waits for the owner's approval (unless the owner turned on approval for every message).",
       "input": {
         "type": "object",
         "additionalProperties": false,

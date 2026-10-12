@@ -80,7 +80,7 @@ function useOp<O>(op: string, input: Record<string, unknown>, every = 0): { data
 }
 
 const ALERT_ERRORS: Record<string, string> = {
-  no_sender_identity: "open Connect, Settings, and choose the workspace sender identity for app messages",
+  no_sender_identity: "open Connect, Senders, and choose the workspace sender for app messages",
   no_grant: "Connect is not in this workspace",
   denied: "you denied it in Connect",
 };
@@ -372,8 +372,8 @@ function Settings() {
       <h2 style={{ margin: 0 }}>Alerts</h2>
       <p>
         New items always show in this inbox and in the Teal Brick desktop badge. You can also get a direct message for each new item. The message goes out
-        through Connect from the workspace sender identity you choose in Connect's settings, so Connect must be in your workspace, and Connect may ask you
-        to approve the first message.
+        through Connect from the workspace sender you choose on Connect's Senders page, so Connect must be in your workspace. Connect asks you to approve
+        the first message to a new person; later alerts go out at once unless you turn on approval for every message in the workspace apps policy.
       </p>
       <Field label="Direct message">
         <Select
