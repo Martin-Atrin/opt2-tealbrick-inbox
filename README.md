@@ -69,6 +69,11 @@ The SDK reads only `TB_*` variables (SDK-API §13). The deploy recipe sets them:
 and `TB_BACKUP_DIR` (`/data/backup`: one volume per service). Optional: `TB_LOG_LEVEL`, `TB_RESTORE_FROM`,
 `TB_STANDALONE`. The listen port is the manifest `runtime.port`.
 
+Before its first claim the SDK checks that `TB_DATA_DIR` is a mounted volume (SDK 0.1.12); on a container's own
+disk it waits and does not use the enrolment code. Tests and CI that run `startApp` in bridge mode on Linux set
+`TB_DATA_EPHEMERAL=1` (conformance does, see `conformance.start.ts`; the unit tests run app-alone and need none).
+Never set it in a deploy recipe.
+
 ## Release
 
 1. Set the same version in `package.json` and `tealbrick.manifest.json`.

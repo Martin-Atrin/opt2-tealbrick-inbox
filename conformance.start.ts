@@ -1,14 +1,17 @@
 // Conformance harness (CONFORMANCE §2, app target): `tb-conformance app --start conformance.start.ts` boots the app with
 // the env the suite gives it (fake bridge, enrolment code, TB_KEK, data dir) and drives it like the bridge does. The SDK
 // listens on manifest `runtime.port` (SDK-API §13); `backupNow` lets the suite run the backup/restore round-trip (A7).
-// `--test-roots` (C63): the suite passes TEST Portal Root Keys in TBCONF_PORTAL_ROOT_KEYS; only this harness reads it and
-// hands them to startApp, so the key-set checks (A13) run against test roots. Production never reads that variable.
+// Test roots (C63; the suite default since spec 0.1.12, `--test-roots` kept for older suites): the suite passes TEST
+// Portal Root Keys in TBCONF_PORTAL_ROOT_KEYS; only this harness reads it and hands them to startApp. Required: the SDK
+// refuses every slice whose key-set statement is not signed by a root it pins. Production never reads that variable.
+// Bridge mode on a plain CI disk (SDK 0.1.12 claim guard): the suite (conformance >= 0.1.8) boots the app with
+// TB_DATA_EPHEMERAL=1; this harness keeps that default for older suites. Never set it in a deploy recipe.
 import { startApp } from "@opt2-tealbrick/miniapp-sdk";
 import { app, manifest } from "./src/app.ts";
 
 export default async function start(env: Record<string, string>): Promise<{ url: string; stop(): Promise<void>; backupNow(): Promise<void> }> {
   const harness = env.TBCONF_PORTAL_ROOT_KEYS ? ({ portalRootKeys: JSON.parse(env.TBCONF_PORTAL_ROOT_KEYS) } as Parameters<typeof startApp>[2]) : undefined;
-  const running = await startApp(app, env, harness);
+  const running = await startApp(app, { TB_DATA_EPHEMERAL: "1", ...env }, harness);
   return {
     url: `http://127.0.0.1:${manifest.runtime.port}`,
     stop: () => running.stop(),
