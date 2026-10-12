@@ -101,7 +101,8 @@ test("expiry: an unanswered item expires, cannot be answered and the agent reads
 test("agents see only their own items (another agent's item is not found)", () => {
   const db = memoryDb();
   const a = store.ask(db, from, { kind: "question", title: "Mine" }, T0);
-  assert.throws(() => store.status(db, OTHER.id, a.id), code("item_not_found", 404));
+  assert.deepEqual([store.status(db, OTHER.id, a.id).status, store.status(db, OTHER.id, a.id).response], ["unknown", null]);
+  assert.equal(store.status(db, AGENT.id, "itm_missing").status, "unknown");
   assert.throws(() => store.reply(db, OTHER.id, a.id, "x", T0), code("item_not_found", 404));
   assert.throws(() => store.get(db, "itm_missing", T0), code("item_not_found", 404));
 });

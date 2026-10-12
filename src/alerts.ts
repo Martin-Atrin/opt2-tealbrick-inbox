@@ -89,7 +89,7 @@ function errorCode(e: unknown): string {
 }
 
 async function attempt(db: Db, callApp: Send, id: string, now: number): Promise<void> {
-  const d = db.prepare("SELECT op, input, idem_key, attempts FROM inbox_deliveries WHERE id = ? AND status IN ('pending', 'held')").get(id);
+  const d = db.prepare("SELECT op, input, idem_key, attempts, hold_id FROM inbox_deliveries WHERE id = ? AND status IN ('pending', 'held')").get(id);
   if (!d) return;
   const attempts = Number(d.attempts) + 1;
   const set = (status: string, holdId: string | null, error: string | null) =>
@@ -108,6 +108,9 @@ async function attempt(db: Db, callApp: Send, id: string, now: number): Promise<
     const r = await Promise.race([callApp(CONNECT, String(d.op), JSON.parse(String(d.input)) as Json, { idempotencyKey: String(d.idem_key) }), timeout]);
     // A timed-out send may still land; the retry with the same key then returns the stored result.
     if (r === "timeout") set("pending", null, "timeout");
+    // While the hold waits, the same key answers the same holdId. A NEW holdId means the first hold was decided
+    // without running (denied or expired): stop, so a refused alert never turns into a stream of new holds.
+    else if (r.status === "held" && d.hold_id && r.holdId !== d.hold_id) set("failed", null, "denied");
     else if (r.status === "held") set("held", r.holdId, null);
     else set("sent", null, null);
   } catch (e) {

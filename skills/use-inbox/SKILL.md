@@ -23,7 +23,8 @@ description: How to ask the owner a question or request the owner's approval thr
   - `deny`: do not do it.
   - `answer`: the owner's answer is in `message`.
   - `clarify`: the owner needs more from you; the request is closed. Ask again with a new item that answers the owner's question.
-- `status: expired`: nobody answered in time. Never treat expired, missing or unknown as approval. Ask again only if it still matters.
+- `status: unknown`: no such item of yours (wrong id). Treat it as no answer.
+- `status: expired`: nobody answered in time. Never treat expired, unknown or a missing answer as approval. Ask again only if it still matters.
 
 ## Add information
 - Call `inbox__inbox_reply` with `itemId` and `message` to add facts to an open item. An answer the owner gave on the older text is refused, so the owner always decides on your latest message.

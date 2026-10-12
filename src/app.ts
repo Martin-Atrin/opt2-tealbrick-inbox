@@ -8,7 +8,7 @@
 // holds overview and the alert setting.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type AppDefinition, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { type AppDefinition, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, type StartContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import {
   type AlertsGetInput,
   type AlertsGetOutput,
@@ -55,8 +55,19 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
 /** Every op starts with the lazy expiry sweep, so no handler ever reads an item past its time as open. */
 function begin(ctx: OpContext): number {
   const now = clock.now();
-  store.expireDue(ctx.db, now);
+  if (store.expireDue(ctx.db, now) > 0) ctx.statusChanged();
   return now;
+}
+
+/** Background tick (C85 app-initiated calls): expiry sweep (badge), due alert sends. */
+export const TICK_MS = 60_000;
+export async function tick(ctx: Pick<StartContext, "db" | "log" | "callApp" | "statusChanged">, now = clock.now()): Promise<void> {
+  try {
+    if (store.expireDue(ctx.db, now) > 0) ctx.statusChanged();
+    await retryDue(ctx.db, ctx.callApp, now);
+  } catch (e) {
+    ctx.log.warn("inbox tick failed", { error: e instanceof Error ? e.message : "unknown" });
+  }
 }
 
 /** Owner ops: only a person session reaches them (SDK); this guards the handler too (C84: approver = owner only). */
@@ -82,6 +93,7 @@ export const handlers = {
     async run(input, ctx) {
       const now = begin(ctx);
       const item = store.ask(ctx.db, { type: ctx.caller.type, id: ctx.caller.id, name: ctx.caller.name }, input, now);
+      ctx.statusChanged();
       try {
         await alertNewItem(ctx.db, ctx.callApp, item, now);
       } catch (e) {
@@ -121,13 +133,17 @@ export const handlers = {
   [OP.itemDecide]: op<ItemDecideInput, ItemDecideOutput>({
     async run(input, ctx) {
       const who = owner(ctx);
-      return store.decide(ctx.db, input, who, begin(ctx));
+      const out = store.decide(ctx.db, input, who, begin(ctx));
+      ctx.statusChanged();
+      return out;
     },
   }),
   [OP.itemSnooze]: op<ItemSnoozeInput, ItemSnoozeOutput>({
     async run(input, ctx) {
       owner(ctx);
-      return store.snooze(ctx.db, input.itemId, input.until, begin(ctx));
+      const out = store.snooze(ctx.db, input.itemId, input.until, begin(ctx));
+      ctx.statusChanged();
+      return out;
     },
   }),
   [OP.itemPriority]: op<ItemPriorityInput, ItemPriorityOutput>({
@@ -146,7 +162,11 @@ export const handlers = {
     async run(_input, ctx) {
       owner(ctx);
       const now = begin(ctx);
-      return overview(manifest, store.openItems(ctx.db, now, 100), now);
+      const c = ctx as SdkOpContext;
+      return overview(
+        { manifest, companionTargets: () => c.companionTargets(), callApp: (p, o, i) => c.callApp(p, o, i), ownerLink: (p) => c.ownerLink(p), now },
+        store.openItems(ctx.db, now, 100),
+      );
     },
   }),
   [OP.alertsGet]: op<AlertsGetInput, AlertsGetOutput>({
@@ -168,6 +188,16 @@ export const handlers = {
   }),
 } satisfies Record<OpId, HandlerSpec>;
 
-export const definition: SdkAppDefinition = { manifest, handlers, migrations: migrationsDir };
+export const definition: SdkAppDefinition = {
+  manifest,
+  handlers,
+  migrations: migrationsDir,
+  // C86: open, unsnoozed items count in the TBD badge (held receipts + this)
+  pendingCount: async (db) => store.waitingCount(db, clock.now()),
+  async onStart(ctx) {
+    await tick(ctx);
+    setInterval(() => void tick(ctx), TICK_MS).unref();
+  },
+};
 
 export const app = defineApp(definition);

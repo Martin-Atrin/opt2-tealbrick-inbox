@@ -11,9 +11,9 @@ import { manifestDigest, validateManifest } from "@opt2-tealbrick/manifest";
 import { defineApp, type Json, startApp, type TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { MANIFEST_DIGEST, OP } from "#kit";
 import { ALERTS_OFF, alertText, MAX_ATTEMPTS } from "../src/alerts.ts";
-import { clock, definition, handlers, manifest } from "../src/app.ts";
-import { holdsPendingDeclared, NOT_YET } from "../src/holds.ts";
-import { AGENT, type CallApp, ctxFor, memoryDb, OTHER, OWNER, type Sent } from "./helpers.ts";
+import { clock, definition, handlers, manifest, tick } from "../src/app.ts";
+import { holdsPendingDeclared, NO_CONSENT } from "../src/holds.ts";
+import { AGENT, type CallApp, ctxFor, memoryDb, OTHER, OWNER, PORTAL, type Sent, WS } from "./helpers.ts";
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -42,7 +42,14 @@ test("manifest validates; agent ops and person ops are the brief's set", () => {
   assert.deepEqual(by("person"), ["alerts_get", "alerts_set", "holds_overview", "item_ack", "item_decide", "item_get", "item_priority", "item_snooze", "items_list"]);
   const ask = manifest.operations.find((o) => o.id === "inbox_ask");
   assert.equal(ask?.idempotency, "required", "inbox_ask needs an idempotency key");
-  assert.deepEqual(manifest.companions?.map((c) => [c.product, c.operations]), [["connect", ["buzz_dm", "channel_dm"]]]);
+  assert.deepEqual(
+    manifest.companions?.map((c) => [c.product, c.operations, c.crud]),
+    [
+      ["connect", ["buzz_dm", "channel_dm"], ["create"]],
+      ["*", ["tb.holds_pending"], ["read"]],
+    ],
+    "the wildcard companion covers tb.holds_pending read only (M-CP-3)",
+  );
 });
 
 test("the generated kit matches the manifest and every operation has exactly one handler", () => {
@@ -102,7 +109,7 @@ test("ACCEPTANCE (handlers): an agent asks → the owner answers → the agent r
   await assert.rejects(h.item_decide.run({ itemId: asked.itemId, version: fresh.version + 1, response: "deny" }, me), code("already_decided"));
   assert.equal((await h.inbox_status.run({ itemId: asked.itemId }, agent)).response, "approve");
   // another agent cannot read it
-  await assert.rejects(h.inbox_status.run({ itemId: asked.itemId }, ctxFor(db, OTHER)), code("item_not_found"));
+  assert.equal((await h.inbox_status.run({ itemId: asked.itemId }, ctxFor(db, OTHER))).status, "unknown");
 });
 
 test("expiry through the handlers: the lazy sweep closes the item; answering it is refused", async (t) => {
@@ -133,21 +140,110 @@ test("owner ops refuse a non-person caller (approver = owner only)", async () =>
     await assert.rejects(h[id].run(input, ctxFor(db, AGENT)), code("owner_only"), id);
 });
 
-test("holds_overview before spec 0.1.13: Inbox's own open items, the feature check off, a clear note", async () => {
+const hid = (n: number) => `hld_01M4R000000000000000000${String(n).padStart(3, "0")}`;
+const pendingItem = (n: number, product: string, extra: Record<string, unknown> = {}) => ({
+  id: hid(n),
+  product,
+  op: "buzz_dm_first",
+  family: "first_contact",
+  reason: "first message to this person",
+  heldBy: null,
+  summary: `DM #${n}`,
+  caller: { type: "agent", id: AGENT.id, name: AGENT.name },
+  createdAt: new Date(Date.parse("2026-10-12T09:00:00Z") + n * 1000).toISOString(),
+  ageS: 10,
+  decidePath: `/holds/${hid(n)}`,
+  ...extra,
+});
+
+test("holds_overview without consent (no companion targets): Inbox's own open items, a consent note, no calls", async () => {
   const db = memoryDb();
   const a = await h.inbox_ask.run({ kind: "approval", title: "Approve the plan" }, ctxFor(db, AGENT));
   await h.inbox_ask.run({ kind: "question", title: "Answered one" }, ctxFor(db, AGENT));
   const done = (await h.items_list.run({}, ctxFor(db, OWNER))).items.find((i: { title: string }) => i.title === "Answered one");
   await h.item_decide.run({ itemId: done.id, version: 1, response: "answer", message: "ok" }, ctxFor(db, OWNER));
-  assert.equal(holdsPendingDeclared(manifest), false);
-  assert.equal(holdsPendingDeclared({ companions: [{ product: "*" as never, operations: ["tb.holds_pending"], crud: ["read"], purpose: "x" }] }), true);
-  const o = await h.holds_overview.run({}, ctxFor(db, OWNER));
+  assert.equal(holdsPendingDeclared(manifest), true, "0.2.0 declares the wildcard companion");
+  const { callApp, sent } = fakeConnect(() => ({ status: "ok", output: { items: [], nextCursor: null } }));
+  const o = await h.holds_overview.run({}, ctxFor(db, OWNER, callApp, { targets: [] }));
   assert.equal(o.source, "inbox_only");
-  assert.equal(o.unavailable, NOT_YET);
+  assert.equal(o.unavailable, NO_CONSENT);
+  assert.equal(sent.length, 0);
   assert.deepEqual(
-    o.rows.map((r: { product: string; id: string; summary: string; decidePath: string }) => [r.product, r.id, r.summary, r.decidePath]),
-    [["inbox", a.itemId, "Approve the plan", `/?item=${a.itemId}`]],
+    o.rows.map((r: { product: string; id: string; summary: string; decidePath: string; openUrl: string }) => [r.product, r.id, r.summary, r.decidePath, r.openUrl]),
+    [["inbox", a.itemId, "Approve the plan", `/items/${a.itemId}`, `${PORTAL}/w/${WS}/open?product=inbox&path=${encodeURIComponent(`/items/${a.itemId}`)}`]],
   );
+});
+
+test("holds_overview with consent: every target app's pending holds (summaries only, paged), oldest first, Portal links into the owning app", async () => {
+  const db = memoryDb();
+  await h.inbox_ask.run({ kind: "approval", title: "Inbox item" }, ctxFor(db, AGENT));
+  const calls: string[] = [];
+  const callApp = (async (product: string, op: string, input: Json) => {
+    calls.push(`${product}:${op}:${JSON.stringify(input)}`);
+    if (op !== "tb.holds_pending") throw new Error("unexpected op");
+    const cursor = (input as { cursor?: string }).cursor;
+    if (product === "connect" && !cursor) return { status: "ok", output: { items: [pendingItem(2, "connect", { input: { to: "secret" }, view: "payload", meta: { x: 1 } })], nextCursor: "c2" } };
+    if (product === "connect") return { status: "ok", output: { items: [pendingItem(1, "connect"), { id: "not-a-hold" }], nextCursor: null } };
+    if (product === "kanban") throw Object.assign(new Error("down"), { code: "app_unavailable" });
+    return { status: "ok", output: { items: [], nextCursor: null } };
+  }) as CallApp;
+  const o = await h.holds_overview.run({}, ctxFor(db, OWNER, callApp, { targets: ["connect", "inbox", "kanban", "rules"] }));
+  assert.equal(o.source, "all_apps");
+  assert.equal(o.unavailable, null);
+  assert.ok(!calls.some((c) => c.startsWith("inbox:")), "never asks itself");
+  assert.deepEqual(calls.filter((c) => c.startsWith("connect:")), ['connect:tb.holds_pending:{"limit":100}', 'connect:tb.holds_pending:{"limit":100,"cursor":"c2"}']);
+  const connect = o.rows.filter((r: { product: string }) => r.product === "connect");
+  assert.deepEqual(
+    connect.map((r: { id: string }) => r.id),
+    [hid(1), hid(2)],
+    "oldest first; malformed rows dropped",
+  );
+  const r1 = connect[0];
+  assert.deepEqual(Object.keys(r1).sort(), ["ageS", "caller", "createdAt", "decidePath", "family", "id", "op", "openUrl", "product", "reason", "summary"]);
+  assert.ok(!JSON.stringify(o).includes("secret") && !JSON.stringify(o).includes("payload"), "no payload passes through");
+  assert.equal(r1.family, "first_contact");
+  assert.equal(r1.openUrl, `${PORTAL}/w/${WS}/open?product=connect&path=${encodeURIComponent(`/holds/${hid(1)}`)}`);
+  assert.deepEqual(o.errors, [{ product: "kanban", code: "app_unavailable" }]);
+  assert.equal(o.rows.at(-1).product, "inbox", "the Inbox item is the newest");
+});
+
+test("holds_overview after consent is revoked: every app refuses → the consent note; no Portal origin yet → no links", async () => {
+  const db = memoryDb();
+  const refuse = (async () => {
+    throw Object.assign(new Error("not granted"), { code: "not_granted" });
+  }) as CallApp;
+  const o = await h.holds_overview.run({}, ctxFor(db, OWNER, refuse, { targets: ["connect", "knowledge"] }));
+  assert.equal(o.unavailable, NO_CONSENT);
+  assert.deepEqual(o.errors, [
+    { product: "connect", code: "not_granted" },
+    { product: "knowledge", code: "not_granted" },
+  ]);
+  const ok = (async () => ({ status: "ok", output: { items: [pendingItem(1, "connect")], nextCursor: null } })) as CallApp;
+  const o2 = await h.holds_overview.run({}, ctxFor(db, OWNER, ok, { targets: ["connect"], portal: false }));
+  assert.equal(o2.rows[0].openUrl, null);
+});
+
+test("badge: pendingCount = open, unexpired, unsnoozed items; asks and answers push the status", async (t) => {
+  const db = memoryDb();
+  const real = clock.now;
+  t.after(() => {
+    clock.now = real;
+  });
+  let now = Date.parse("2026-10-12T10:00:00Z");
+  clock.now = () => now;
+  const status = { pushes: 0 };
+  const a = await h.inbox_ask.run({ kind: "approval", title: "A" }, ctxFor(db, AGENT, undefined, { status }));
+  const b = await h.inbox_ask.run({ kind: "question", title: "B", expiresInS: 60 }, ctxFor(db, AGENT, undefined, { status }));
+  await h.inbox_ask.run({ kind: "question", title: "C" }, ctxFor(db, AGENT, undefined, { status }));
+  assert.equal(status.pushes, 3);
+  assert.equal(await definition.pendingCount?.(db), 3);
+  await h.item_snooze.run({ itemId: a.itemId, until: new Date(now + 3600_000).toISOString() }, ctxFor(db, OWNER, undefined, { status }));
+  assert.equal(await definition.pendingCount?.(db), 2);
+  now += 61_000; // B expires
+  assert.equal(await definition.pendingCount?.(db), 1);
+  await h.items_list.run({}, ctxFor(db, OWNER, undefined, { status }));
+  assert.equal(status.pushes, 5, "snooze + the sweep that expired B");
+  assert.equal((await h.inbox_status.run({ itemId: b.itemId }, ctxFor(db, AGENT))).status, "expired");
 });
 
 function fakeConnect(script: (n: number, sent: Sent) => Json | Error): { callApp: CallApp; sent: Sent[] } {
@@ -223,4 +319,46 @@ test("alerts: a held send is repeated with the SAME input and key until Connect 
   const d = (await h.item_get.run({ itemId: asked.itemId }, ctxFor(db, OWNER))).deliveries[0];
   assert.deepEqual([d.status, d.holdId, d.attempts], ["sent", "hld_1", 3]);
   assert.ok(MAX_ATTEMPTS >= 15, "keeps trying for at least a hold's default lifetime");
+
+  // the owner denies the DM in Connect: the next repeat is held under a NEW id → stop, recorded as denied
+  const deny = fakeConnect((n): Json => ({ status: "held", holdId: n === 1 ? "hld_a" : "hld_b", expiresAt: "x" }));
+  const b = await h.inbox_ask.run({ kind: "approval", title: "Deny me" }, ctxFor(db, AGENT, deny.callApp));
+  now += 61_000;
+  await h.items_list.run({}, ctxFor(db, OWNER, deny.callApp));
+  now += 61_000;
+  await h.items_list.run({}, ctxFor(db, OWNER, deny.callApp));
+  assert.equal(deny.sent.length, 2, "no third attempt after the denial");
+  const bd = (await h.item_get.run({ itemId: b.itemId }, ctxFor(db, OWNER))).deliveries[0];
+  assert.deepEqual([bd.status, bd.error, bd.holdId], ["failed", "denied", "hld_a"]);
+});
+
+test("background tick (app-initiated): repeats a held alert send and records no_sender_identity once, without an op", async (t) => {
+  const db = memoryDb();
+  const real = clock.now;
+  t.after(() => {
+    clock.now = real;
+  });
+  let now = Date.parse("2026-10-12T10:00:00Z");
+  clock.now = () => now;
+  await h.alerts_set.run({ dm: "buzz", buzzTo: NPUB, channelAccount: null, channelPerson: null }, ctxFor(db, OWNER));
+  const first = fakeConnect((): Json => ({ status: "held", holdId: "hld_x", expiresAt: "x" }));
+  const asked = await h.inbox_ask.run({ kind: "approval", title: "Held alert" }, ctxFor(db, AGENT, first.callApp));
+  const later = fakeConnect((): Json => ({ status: "ok", output: {} }));
+  const status = { pushes: 0 };
+  const startCtx = { db, log: { debug() {}, info() {}, warn() {}, error() {} }, callApp: later.callApp, statusChanged: () => status.pushes++ };
+  await tick(startCtx as never, now + 1000);
+  assert.equal(later.sent.length, 0, "not due yet");
+  now += 61_000;
+  await tick(startCtx as never, now);
+  assert.equal(later.sent.length, 1);
+  assert.equal(later.sent[0]?.key, first.sent[0]?.key, "same idempotency key as the held send");
+  assert.equal((await h.item_get.run({ itemId: asked.itemId }, ctxFor(db, OWNER))).deliveries[0].status, "sent");
+
+  const refusing = fakeConnect(() => Object.assign(new Error("no sender"), { code: "no_sender_identity" }));
+  const b = await h.inbox_ask.run({ kind: "question", title: "Q" }, ctxFor(db, AGENT, refusing.callApp));
+  now += 120_000;
+  await tick({ ...startCtx, callApp: refusing.callApp } as never, now);
+  assert.equal(refusing.sent.length, 1, "a refusal is never retried");
+  const d = (await h.item_get.run({ itemId: b.itemId }, ctxFor(db, OWNER))).deliveries[0];
+  assert.deepEqual([d.status, d.error], ["failed", "no_sender_identity"]);
 });

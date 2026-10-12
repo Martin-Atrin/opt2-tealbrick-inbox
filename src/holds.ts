@@ -1,14 +1,19 @@
 // Holds overview (C84, G4): everything that waits for the owner in one list.
-// Spec 0.1.13 adds the standard op `tb.holds_pending` reached through a wildcard companion (product "*") that the
-// owner consents to at deploy; Inbox then lists the pending holds of ALL apps, and each row opens the owning app's
-// decision page through a Portal launch ticket (deciding stays in the owning app). Until this build declares that
-// companion (feature check below), the overview lists Inbox's own open items only.
-import type { AppDefinition } from "@opt2-tealbrick/miniapp-sdk";
+// Spec 0.1.13: the standard op `tb.holds_pending` on every app, reached through the wildcard companion
+// (`product: "*"`, M-CP-3) that Core grants only after the owner's explicit consent at deploy (revocable). The SDK's
+// `ctx.companionTargets()` names the apps this instance holds grants for; without consent there are none (or the call
+// is refused), and the overview says so. Deciding stays in the owning app: each row carries a Portal link
+// (`/w/<ws>/open?product=<app>&path=/holds/<id>`, C86) that opens that app's decision page with a launch ticket.
+import type { AppDefinition, HoldsPendingItem, HoldsPendingOutput, Json } from "@opt2-tealbrick/miniapp-sdk";
 import type { ItemSummary } from "./store.ts";
 
 type Manifest = AppDefinition["manifest"];
 
 export const HOLDS_PENDING_OP = "tb.holds_pending";
+export const SELF = "inbox";
+/** Per app: at most this many pages of 100 (the overview shows the oldest first; more is a sign to open the app). */
+const MAX_PAGES = 3;
+export const CALL_TIMEOUT_MS = 5000;
 
 export interface OverviewRow {
   product: string;
@@ -21,6 +26,7 @@ export interface OverviewRow {
   createdAt: string;
   ageS: number;
   decidePath: string;
+  openUrl: string | null;
 }
 
 export interface Overview {
@@ -30,17 +36,41 @@ export interface Overview {
   errors: { product: string; code: string }[];
 }
 
+export interface OverviewDeps {
+  manifest: Pick<Manifest, "companions">;
+  companionTargets(): string[];
+  callApp(product: string, op: string, input: Json): Promise<unknown>;
+  ownerLink(path: string): string | null;
+  now: number;
+}
+
 /** True when this build declares the cross-app holds companion (spec 0.1.13 and later). */
 export function holdsPendingDeclared(manifest: Pick<Manifest, "companions">): boolean {
   return (manifest.companions ?? []).some((c) => (c.product as string) === "*" && c.operations.includes(HOLDS_PENDING_OP));
 }
 
-export const NOT_YET =
-  "Pending approvals of other apps appear here once the workspace runs Teal Brick spec 0.1.13 and you allow Operator Inbox to see them. Until then, open each app's Holds page from Portal.";
+export const NO_CONSENT =
+  "Pending approvals of other apps appear here when you allow Operator Inbox to see them (Portal: Operator Inbox settings, “This app can see the pending approvals of all apps”). Until then, open each app's Holds page from Portal.";
 
-export function inboxRows(items: readonly ItemSummary[], now: number): OverviewRow[] {
+export const itemPath = (id: string) => `/items/${id}`;
+
+/** Portal link that opens `product` at `path`. ownerLink names this app; the same route takes any product (C86). */
+export function linkFor(ownerLink: (path: string) => string | null, product: string, path: string): string | null {
+  let own: string | null;
+  try {
+    own = ownerLink(path);
+  } catch {
+    return null; // path_invalid: never link a path the launch rule refuses
+  }
+  if (!own) return null;
+  const url = new URL(own);
+  url.searchParams.set("product", product);
+  return url.toString();
+}
+
+export function inboxRows(items: readonly ItemSummary[], deps: Pick<OverviewDeps, "ownerLink" | "now">): OverviewRow[] {
   return items.map((i) => ({
-    product: "inbox",
+    product: SELF,
     id: i.id,
     op: "inbox_ask",
     family: null,
@@ -48,14 +78,84 @@ export function inboxRows(items: readonly ItemSummary[], now: number): OverviewR
     summary: i.title,
     caller: i.from,
     createdAt: i.createdAt,
-    ageS: Math.max(0, Math.floor((now - Date.parse(i.createdAt)) / 1000)),
-    decidePath: `/?item=${encodeURIComponent(i.id)}`,
+    ageS: Math.max(0, Math.floor((deps.now - Date.parse(i.createdAt)) / 1000)),
+    decidePath: itemPath(i.id),
+    openUrl: linkFor(deps.ownerLink, SELF, itemPath(i.id)),
   }));
 }
 
-export function overview(manifest: Pick<Manifest, "companions">, items: readonly ItemSummary[], now: number): Overview {
-  // 0.1.x builds never declare the wildcard companion (the 0.1.11 validator refuses product "*"), so this is always
-  // the Inbox-only list; the all-apps branch arrives with the SDK that serves tb.holds_pending (spec 0.1.13).
-  const unavailable = holdsPendingDeclared(manifest) ? "This build lists other apps' approvals only with SDK 0.1.13." : NOT_YET;
-  return { source: "inbox_only", unavailable, rows: inboxRows(items, now), errors: [] };
+const HOLD_ID = /^hld_[0-9A-HJKMNP-TV-Z]{26}$/;
+const text = (v: unknown, max: number): string | null => (typeof v === "string" ? v.slice(0, max) : null);
+
+/** Copies only the summary fields (never trusts the shape of another app's answer; no payload can pass through). */
+function rowOf(product: string, h: HoldsPendingItem, deps: Pick<OverviewDeps, "ownerLink" | "now">): OverviewRow | null {
+  if (!h || typeof h.id !== "string" || !HOLD_ID.test(h.id)) return null;
+  const decidePath = `/holds/${h.id}`;
+  const created = typeof h.createdAt === "string" && Number.isFinite(Date.parse(h.createdAt)) ? h.createdAt : new Date(deps.now).toISOString();
+  const ct = h.caller?.type === "app" ? "app" : "agent";
+  return {
+    product,
+    id: h.id,
+    op: text(h.op, 64) ?? "",
+    family: text(h.family, 32),
+    reason: text(h.reason, 280),
+    summary: text(h.summary, 280) ?? "",
+    caller: { type: ct, id: text(h.caller?.id, 64) ?? "", name: text(h.caller?.name, 80) ?? "" },
+    createdAt: created,
+    ageS: Math.max(0, Math.floor((deps.now - Date.parse(created)) / 1000)),
+    decidePath,
+    openUrl: linkFor(deps.ownerLink, product, decidePath),
+  };
+}
+
+function codeOf(e: unknown): string {
+  const c = (e as { code?: unknown })?.code;
+  return typeof c === "string" && c ? c.slice(0, 64) : "unavailable";
+}
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p, new Promise<T>((_, reject) => (timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { code: "timeout" })), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function pendingOf(product: string, deps: OverviewDeps): Promise<OverviewRow[]> {
+  const rows: OverviewRow[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const r = (await withTimeout(deps.callApp(product, HOLDS_PENDING_OP, { limit: 100, ...(cursor ? { cursor } : {}) }), CALL_TIMEOUT_MS)) as
+      | { status: "ok"; output: HoldsPendingOutput }
+      | { status: "held" };
+    // a policy may hold even this read; the owner sees that instead of a silent gap
+    if (r?.status !== "ok") throw Object.assign(new Error("held"), { code: r?.status === "held" ? "held" : "bad_answer" });
+    for (const h of Array.isArray(r.output?.items) ? r.output.items : []) {
+      const row = rowOf(product, h, deps);
+      if (row) rows.push(row);
+    }
+    cursor = typeof r.output?.nextCursor === "string" && r.output.nextCursor ? r.output.nextCursor : null;
+    if (!cursor) break;
+  }
+  return rows;
+}
+
+export async function overview(deps: OverviewDeps, items: readonly ItemSummary[]): Promise<Overview> {
+  const own = inboxRows(items, deps);
+  if (!holdsPendingDeclared(deps.manifest)) return { source: "inbox_only", unavailable: NO_CONSENT, rows: own, errors: [] };
+  const targets = deps.companionTargets().filter((p) => p !== SELF && p !== "*");
+  if (targets.length === 0) return { source: "inbox_only", unavailable: NO_CONSENT, rows: own, errors: [] };
+  const results = await Promise.allSettled(targets.map((p) => pendingOf(p, deps)));
+  const rows = [...own];
+  const errors: Overview["errors"] = [];
+  results.forEach((r, i) => {
+    const product = targets[i] as string;
+    if (r.status === "fulfilled") rows.push(...r.value);
+    else errors.push({ product, code: codeOf(r.reason) });
+  });
+  rows.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.id < b.id ? -1 : 1));
+  // every app refused (consent revoked: grants gone) → say so, like no consent
+  const refusedAll = errors.length === targets.length && errors.every((e) => ["not_granted", "no_grant", "grant_invalid", "grant_revoked"].includes(e.code));
+  return { source: "all_apps", unavailable: refusedAll ? NO_CONSENT : null, rows, errors };
 }

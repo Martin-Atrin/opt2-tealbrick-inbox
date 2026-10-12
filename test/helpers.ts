@@ -41,7 +41,16 @@ export const AGENT = { type: "agent", id: "agt_01J0000000000000000000000A", name
 export const OTHER = { type: "agent", id: "agt_01J0000000000000000000000B", name: "Other", mode: "free" } as const;
 export const OWNER = { type: "person", id: "per_01J00000000000000000000000", name: "Owner", mode: "free" } as const;
 
-export function ctxFor(db: Db, caller: { type: string; id: string; name: string; mode: string }, callApp?: CallApp): OpContext {
+export const PORTAL = "https://portal.example.test";
+export const WS = "wsp_01J00000000000000000000000";
+
+export interface CtxExtras {
+  targets?: string[];
+  portal?: boolean;
+  status?: { pushes: number };
+}
+
+export function ctxFor(db: Db, caller: { type: string; id: string; name: string; mode: string }, callApp?: CallApp, x: CtxExtras = {}): OpContext {
   const noApp: CallApp = async () => {
     throw Object.assign(new Error("no grant"), { code: "no_grant" });
   };
@@ -51,5 +60,11 @@ export function ctxFor(db: Db, caller: { type: string; id: string; name: string;
     callApp: callApp ?? noApp,
     log: { debug() {}, info() {}, warn() {}, error() {} },
     receipt: { summary() {}, meta() {} },
+    statusChanged() {
+      if (x.status) x.status.pushes++;
+    },
+    // the SDK's rule: <portalUrl>/w/<ws>/open?product=<own>&path=<path>
+    ownerLink: (path: string) => (x.portal === false ? null : `${PORTAL}/w/${WS}/open?product=inbox&path=${encodeURIComponent(path)}`),
+    companionTargets: () => x.targets ?? [],
   } as unknown as OpContext;
 }

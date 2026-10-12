@@ -4,7 +4,7 @@
   "id": "inbox",
   "name": "Operator Inbox",
   "summary": "One queue where your agents ask you questions and request approvals, with the full history and every pending approval in one list.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "sdkMajor": 1,
   "publisher": {
     "name": "Teal Brick"
@@ -161,7 +161,7 @@
     {
       "id": "inbox_status",
       "title": "Read the owner's answer",
-      "description": "Read the state of one of your own inbox items: open, answered (with the response and the owner's message) or expired.",
+      "description": "Read the state of one of your own inbox items: open, answered (with the response and the owner message), expired, or unknown (no such item of yours). Only answered with response approve is an approval.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -171,9 +171,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           }
         }
       },
@@ -195,10 +194,14 @@
             "type": "string"
           },
           "kind": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "enum": [
               "approval",
-              "question"
+              "question",
+              null
             ]
           },
           "status": {
@@ -206,7 +209,8 @@
             "enum": [
               "open",
               "answered",
-              "expired"
+              "expired",
+              "unknown"
             ]
           },
           "seenByOwner": {
@@ -238,7 +242,10 @@
             ]
           },
           "expiresAt": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -269,9 +276,8 @@
           },
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           }
         }
       },
@@ -498,9 +504,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           }
         }
       },
@@ -784,9 +789,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           },
           "version": {
             "type": "integer",
@@ -865,9 +869,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           },
           "until": {
             "type": [
@@ -1011,9 +1014,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           },
           "priority": {
             "type": "string",
@@ -1158,9 +1160,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 4,
-            "maxLength": 64,
-            "pattern": "^itm_[0-9A-Za-z]+$"
+            "minLength": 1,
+            "maxLength": 64
           }
         }
       },
@@ -1286,7 +1287,7 @@
     {
       "id": "holds_overview",
       "title": "Pending approvals",
-      "description": "Everything that waits for the owner: open Inbox items, and the pending holds of all apps once the workspace supports it.",
+      "description": "Everything that waits for the owner: open Inbox items and, with your consent, the pending holds of all apps. Each row opens the owning app where you decide.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1331,7 +1332,8 @@
                 "caller",
                 "createdAt",
                 "ageS",
-                "decidePath"
+                "decidePath",
+                "openUrl"
               ],
               "properties": {
                 "product": {
@@ -1392,6 +1394,13 @@
                 },
                 "decidePath": {
                   "type": "string"
+                },
+                "openUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Portal link that opens the owning app at decidePath (null until the workspace slice names Portal)."
                 }
               }
             }
@@ -1590,6 +1599,16 @@
         "create"
       ],
       "purpose": "Optional owner alert: a direct message when an agent puts a new item in the inbox (off by default)."
+    },
+    {
+      "product": "*",
+      "operations": [
+        "tb.holds_pending"
+      ],
+      "crud": [
+        "read"
+      ],
+      "purpose": "See the pending approvals of all apps in one list (you consent at deploy; deciding stays in each app)."
     }
   ],
   "skills": [

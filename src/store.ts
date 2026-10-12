@@ -158,17 +158,20 @@ function ownRow(db: Db, callerId: string, itemId: string): Row {
 
 export interface AgentStatus {
   itemId: string;
-  kind: Kind;
-  status: Status;
+  kind: Kind | null;
+  status: Status | "unknown";
   seenByOwner: boolean;
   response: Response | null;
   message: string | null;
   decidedAt: string | null;
-  expiresAt: string;
+  expiresAt: string | null;
 }
 
+/** An unknown id, or another caller's item, reads as `unknown` (no existence leak; never an approval). */
 export function status(db: Db, callerId: string, itemId: string): AgentStatus {
-  const r = ownRow(db, callerId, itemId);
+  const r = row(db, itemId);
+  if (!r || r.from_id !== callerId)
+    return { itemId, kind: null, status: "unknown", seenByOwner: false, response: null, message: null, decidedAt: null, expiresAt: null };
   const d = db.prepare("SELECT response, message, decided_at FROM inbox_decisions WHERE item_id = ?").get(itemId);
   return {
     itemId,
@@ -347,4 +350,11 @@ export function readSetting<T>(db: Db, key: string, fallback: T): T {
 
 export function writeSetting(db: Db, key: string, value: unknown): void {
   db.prepare("INSERT INTO inbox_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
+}
+
+/** Items that wait for the owner now (open, not expired, not snoozed): Inbox's share of the TBD badge (C86). */
+export function waitingCount(db: Db, now: number): number {
+  return Number(
+    db.prepare("SELECT COUNT(*) AS n FROM inbox_items WHERE status = 'open' AND expires_at > ? AND (snoozed_until IS NULL OR snoozed_until <= ?)").get(now, now)?.n ?? 0,
+  );
 }

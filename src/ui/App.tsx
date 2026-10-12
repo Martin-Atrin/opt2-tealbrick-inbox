@@ -16,21 +16,30 @@ type Response = ItemGetOutput["responses"][number];
 
 const std = (id: string) => STANDARD_PAGES.find((p) => p.id === id)?.label ?? id;
 
+// Deep links (Portal launch ticket `path`, C86): `/items/<itm_…>` opens one item; `/holds/<hld_…>` (tb.holds_pending
+// decidePath, spec 0.1.13) opens that hold of Operator Inbox itself. `item` stays the query form used inside the app.
+const ITEM_PATH = /\/items\/(itm_[0-9A-Za-z]{1,60})\/?$/;
+const HOLD_PATH = /\/holds\/(hld_[0-9A-HJKMNP-TV-Z]{26})\/?$/;
+
 function locate(): { page: PageId; item: string | null } {
   const url = new URL(globalThis.location.href);
-  if (url.pathname.replace(/\/+$/, "").endsWith("/configure")) return { page: "settings", item: null };
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path.endsWith("/configure")) return { page: "settings", item: null };
+  const hold = HOLD_PATH.exec(path)?.[1];
+  if (hold) return { page: "holds", item: hold };
+  const deep = ITEM_PATH.exec(path)?.[1];
+  if (deep) return { page: "inbox", item: deep };
   const p = url.searchParams.get("page");
   const page: PageId = p === "approvals" || p === "holds" || p === "agents" ? p : "inbox";
   return { page, item: url.searchParams.get("item") };
 }
 
+/** In-app URLs, relative to <base href="/a/inbox/">. */
 function href(page: PageId, item?: string | null): string {
-  if (page === "settings") return "./configure";
-  const q = new URLSearchParams();
-  if (page !== "inbox") q.set("page", page);
-  if (item) q.set("item", item);
-  const s = q.toString();
-  return s ? `./?${s}` : "./";
+  if (page === "settings") return "configure";
+  if (page === "holds" && item) return `holds/${item}`;
+  if (page === "inbox" && item) return `items/${item}`;
+  return page === "inbox" ? "./" : `./?page=${page}`;
 }
 
 const errText = (e: unknown) => (e instanceof TbError ? e.message : e instanceof Error ? e.message : "Something went wrong.");
@@ -69,6 +78,12 @@ function useOp<O>(op: string, input: Record<string, unknown>, every = 0): { data
   }, [op, key, tick, every]);
   return { data, error, reload };
 }
+
+const ALERT_ERRORS: Record<string, string> = {
+  no_sender_identity: "choose the workspace sender identity in Connect's settings",
+  no_grant: "Connect is not in this workspace",
+  denied: "you denied it in Connect",
+};
 
 const PRIORITY_TONE: Record<string, "blocked" | "action" | "neutral"> = { urgent: "blocked", high: "action", normal: "neutral", low: "neutral" };
 const LABEL: Record<Response, string> = { approve: "Approve", deny: "Deny", answer: "Send answer", clarify: "Ask for clarification" };
@@ -246,7 +261,7 @@ function Detail({ id, onChanged }: { id: string; onChanged: () => void }) {
       ) : null}
       {item.deliveries.length > 0 ? (
         <p className="tb-muted">
-          Alert: {item.deliveries.map((d) => `${d.channel === "buzz" ? "Buzz DM" : "channel DM"} ${d.status}${d.error ? ` (${d.error})` : ""}`).join("; ")}
+          Alert: {item.deliveries.map((d) => `${d.channel === "buzz" ? "Buzz DM" : "channel DM"} ${d.status}${d.error ? ` (${ALERT_ERRORS[d.error] ?? d.error})` : ""}`).join("; ")}
         </p>
       ) : null}
     </section>
@@ -301,7 +316,7 @@ function Approvals({ onOpenItem }: { onOpenItem: (id: string) => void }) {
       {data.unavailable ? <Notice>{data.unavailable}</Notice> : null}
       {data.errors.map((e) => (
         <Notice key={e.product} tone="action">
-          {e.product}: {e.code}
+          {e.product}: its approvals could not be read ({e.code}).
         </Notice>
       ))}
       {data.rows.length === 0 ? <p className="tb-muted">Nothing waits for your approval.</p> : null}
@@ -316,7 +331,14 @@ function Approvals({ onOpenItem }: { onOpenItem: (id: string) => void }) {
               <Button size="sm" onClick={() => onOpenItem(r.id)}>
                 Open
               </Button>
-            ) : null}
+            ) : r.openUrl ? (
+              // Portal opens the owning app at its decision page (launch ticket); deciding happens there
+              <a className="tb-btn" data-size="sm" href={r.openUrl} target="_blank" rel="noopener noreferrer">
+                Open in {r.product}
+              </a>
+            ) : (
+              <span className="tb-muted">Open {r.product} from Portal to decide.</span>
+            )}
           </li>
         ))}
       </ul>
@@ -347,8 +369,9 @@ function Settings() {
     <section className="tb-panel tb-stack" aria-label="Alerts">
       <h2 style={{ margin: 0 }}>Alerts</h2>
       <p>
-        New items always show in this inbox. You can also get a direct message for each new item. The message goes out through Connect, so Connect must be in
-        your workspace, and Connect may ask you to approve the first message.
+        New items always show in this inbox and in the Teal Brick desktop badge. You can also get a direct message for each new item. The message goes out
+        through Connect from the workspace sender identity you choose in Connect's settings, so Connect must be in your workspace, and Connect may ask you
+        to approve the first message.
       </p>
       <Field label="Direct message">
         <Select
@@ -390,10 +413,12 @@ function Settings() {
   );
 }
 
-function Holds() {
-  const { holds, loading, decide } = useHolds({ status: "held" });
+function Holds({ only }: { only: string | null }) {
+  const { holds: all, loading, decide } = useHolds({ status: "held" });
   if (loading) return <p className="tb-muted">Loading holds.</p>;
-  if (holds.length === 0) return <p className="tb-muted">No calls to Operator Inbox wait for your approval.</p>;
+  const holds = only ? all.filter((h) => h.id === only) : all;
+  if (holds.length === 0)
+    return <p className="tb-muted">{only ? "This approval is no longer waiting." : "No calls to Operator Inbox wait for your approval."}</p>;
   return (
     <ul className="tb-stack" style={{ listStyle: "none", padding: 0 }}>
       {holds.map((h) => (
@@ -448,7 +473,7 @@ export function App() {
   const content: Record<PageId, ReactNode> = {
     inbox: <Inbox selected={loc.item} onSelect={(id) => go("inbox", id)} onCounts={setPending} />,
     approvals: <Approvals onOpenItem={(id) => go("inbox", id)} />,
-    holds: <Holds />,
+    holds: <Holds only={loc.page === "holds" ? loc.item : null} />,
     agents: <Agents />,
     settings: <Settings />,
   };
