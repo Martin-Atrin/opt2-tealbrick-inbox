@@ -45,7 +45,7 @@ test("manifest validates; agent ops and person ops are the brief's set", () => {
   assert.deepEqual(
     manifest.companions?.map((c) => [c.product, c.operations, c.crud]),
     [
-      ["connect", ["buzz_dm", "channel_dm"], ["create"]],
+      ["connect", ["buzz_dm", "buzz_dm_first", "channel_dm", "channel_dm_first"], ["create"]],
       ["*", ["tb.holds_pending"], ["read"]],
     ],
     "the wildcard companion covers tb.holds_pending read only (M-CP-3)",
@@ -361,4 +361,36 @@ test("background tick (app-initiated): repeats a held alert send and records no_
   assert.equal(refusing.sent.length, 1, "a refusal is never retried");
   const d = (await h.item_get.run({ itemId: b.itemId }, ctxFor(db, OWNER))).deliveries[0];
   assert.deepEqual([d.status, d.error], ["failed", "no_sender_identity"]);
+});
+
+test("alerts: first contact — Connect asks for buzz_dm_first → the same input goes to the first-contact op (held for the owner), then runs once", async (t) => {
+  const db = memoryDb();
+  const real = clock.now;
+  t.after(() => {
+    clock.now = real;
+  });
+  let now = Date.parse("2026-10-12T10:00:00Z");
+  clock.now = () => now;
+  await h.alerts_set.run({ dm: "buzz", buzzTo: NPUB, channelAccount: null, channelPerson: null }, ctxFor(db, OWNER));
+  const connect = fakeConnect((n, s): Json | Error => {
+    if (s.op === "buzz_dm") return Object.assign(new Error("first"), { code: "buzz_first_contact_required" });
+    return n === 2 ? { status: "held", holdId: "hld_fc", expiresAt: "x" } : { status: "ok", output: {} };
+  });
+  const asked = await h.inbox_ask.run({ kind: "question", title: "First" }, ctxFor(db, AGENT, connect.callApp));
+  assert.deepEqual(
+    connect.sent.map((x) => x.op),
+    ["buzz_dm", "buzz_dm_first"],
+  );
+  assert.deepEqual(connect.sent[1]?.input, connect.sent[0]?.input);
+  assert.equal(connect.sent[1]?.key, connect.sent[0]?.key);
+  let d = (await h.item_get.run({ itemId: asked.itemId }, ctxFor(db, OWNER))).deliveries[0];
+  assert.deepEqual([d.status, d.holdId], ["held", "hld_fc"]);
+  now += 61_000; // the owner approved the first contact in Connect
+  await h.items_list.run({}, ctxFor(db, OWNER, connect.callApp));
+  assert.deepEqual(
+    connect.sent.map((x) => x.op),
+    ["buzz_dm", "buzz_dm_first", "buzz_dm_first"],
+  );
+  d = (await h.item_get.run({ itemId: asked.itemId }, ctxFor(db, OWNER))).deliveries[0];
+  assert.equal(d.status, "sent");
 });

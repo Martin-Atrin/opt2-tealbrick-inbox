@@ -80,7 +80,7 @@ function useOp<O>(op: string, input: Record<string, unknown>, every = 0): { data
 }
 
 const ALERT_ERRORS: Record<string, string> = {
-  no_sender_identity: "choose the workspace sender identity in Connect's settings",
+  no_sender_identity: "open Connect, Settings, and choose the workspace sender identity for app messages",
   no_grant: "Connect is not in this workspace",
   denied: "you denied it in Connect",
 };
@@ -261,7 +261,9 @@ function Detail({ id, onChanged }: { id: string; onChanged: () => void }) {
       ) : null}
       {item.deliveries.length > 0 ? (
         <p className="tb-muted">
-          Alert: {item.deliveries.map((d) => `${d.channel === "buzz" ? "Buzz DM" : "channel DM"} ${d.status}${d.error ? ` (${ALERT_ERRORS[d.error] ?? d.error})` : ""}`).join("; ")}
+          Alert: {item.deliveries
+            .map((d) => `${d.channel === "buzz" ? "Buzz DM" : "channel DM"} ${d.status === "held" ? "waits for your approval in Connect" : d.status}${d.error ? ` (${ALERT_ERRORS[d.error] ?? d.error})` : ""}`)
+            .join("; ")}
         </p>
       ) : null}
     </section>

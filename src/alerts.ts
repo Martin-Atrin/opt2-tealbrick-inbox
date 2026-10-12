@@ -22,6 +22,12 @@ export const SEND_TIMEOUT_MS = 5000;
 const RETRY_AFTER_MS = 60_000;
 export const MAX_ATTEMPTS = 60;
 
+/** Connect's refusal for a send to someone never written to → the op that asks the owner for first contact (C57). */
+export const FIRST_CONTACT: Record<string, string> = {
+  buzz_first_contact_required: "buzz_dm_first",
+  channel_first_contact_required: "channel_dm_first",
+};
+
 const NPUB = /^(npub1[02-9ac-hj-np-z]{58}|[0-9a-f]{64})$/;
 
 export function readAlerts(db: Db): Alerts {
@@ -114,8 +120,17 @@ async function attempt(db: Db, callApp: Send, id: string, now: number): Promise<
     else if (r.status === "held") set("held", r.holdId, null);
     else set("sent", null, null);
   } catch (e) {
+    const code = errorCode(e);
+    const first = FIRST_CONTACT[code];
+    if (first && String(d.op) !== first) {
+      // Connect: the owner's address was never written to from the workspace sender. Switch to the first-contact op
+      // (Connect holds it for the owner's approval), same input and key, and try it at once.
+      db.prepare("UPDATE inbox_deliveries SET op = ?, updated_at = ? WHERE id = ?").run(first, now, id);
+      clearTimeout(timer);
+      return attempt(db, callApp, id, now);
+    }
     // denied hold, no grant (Connect not deployed), no sender identity, paused…: final, shown to the owner
-    set("failed", null, errorCode(e));
+    set("failed", null, code);
   } finally {
     clearTimeout(timer);
   }

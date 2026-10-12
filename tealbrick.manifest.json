@@ -4,7 +4,7 @@
   "id": "inbox",
   "name": "Operator Inbox",
   "summary": "One queue where your agents ask you questions and request approvals, with the full history and every pending approval in one list.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "sdkMajor": 1,
   "publisher": {
     "name": "Teal Brick"
@@ -1593,12 +1593,14 @@
       "product": "connect",
       "operations": [
         "buzz_dm",
-        "channel_dm"
+        "buzz_dm_first",
+        "channel_dm",
+        "channel_dm_first"
       ],
       "crud": [
         "create"
       ],
-      "purpose": "Optional owner alert: a direct message when an agent puts a new item in the inbox (off by default)."
+      "purpose": "Optional owner alert: a direct message when an agent puts a new item in the inbox (off by default; the first message to you waits for your approval in Connect)."
     },
     {
       "product": "*",
