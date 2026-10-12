@@ -24,13 +24,23 @@ A Teal Brick opt2 miniapp (product id `inbox`), built on `@opt2-tealbrick/miniap
 validation, OpenAPI, receipts, holds, idempotency, scopes, backups and status from it. You write handlers by
 operation id (`src/app.ts`) and plain migrations (`migrations/`).
 
+## What it does
+
+- Agents (and companion apps) call `inbox_ask` (question or approval request; idempotency key required), poll `inbox_status`, and add facts with `inbox_reply`.
+- The owner (the only person who can sign in, C84) lists, opens, answers (`approve`, `deny`, `answer`, `clarify`), snoozes, reprioritises and marks items seen.
+- Fail closed: a second answer (`already_decided`), an answer on text the owner has not read (`stale_version`), an answer after expiry (`item_expired`), a response the item does not allow (`response_not_allowed`), answer/clarify without words (`message_required`).
+- Holds overview: today Inbox's own open items; the pending holds of all apps once spec 0.1.13 ships (`tb.holds_pending`, owner consent at deploy). Deciding stays in the owning app.
+- Alerts: optional owner DM through Connect (Buzz or a channel account), off by default. Counting Inbox items in the TBD badge waits for the SDK `pendingCount` hook (C86).
+
 ## Layout
 
 | Path | Content |
 |---|---|
 | `tealbrick.manifest.json` | identity, runtime (data + backup volumes), operations, scopes, skills, backups, UI paths |
-| `src/app.ts` | `defineApp`: one typed handler per operation (op ids and I/O types from `#kit`), agent first-sight event |
-| `src/items.ts` | the app's table access (plain functions over the SDK `Db`) |
+| `src/app.ts` | `defineApp`: one typed handler per operation (op ids and I/O types from `#kit`) |
+| `src/store.ts` | the decision loop: items, messages (the thread), decisions (who and when), snooze, priority, ack; every fail-closed rule |
+| `src/alerts.ts` | optional owner alert DM through Connect (companion call; off by default; held sends repeated with the same input and key) |
+| `src/holds.ts` | holds overview: Inbox items now; all apps' pending holds with spec 0.1.13 (`tb.holds_pending`, owner consent) |
 | `src/main.ts` | `startApp(app, process.env)` |
 | `src/ui/` | React UI (`<TbProvider>` + `<AppShell>` from `@opt2-tealbrick/ui`), built to `dist/ui` |
 | `migrations/0001_init.sql` | baseline; forward-only, never edit a released file |

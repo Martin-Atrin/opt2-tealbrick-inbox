@@ -3,112 +3,1608 @@
   "schema": "tealbrick.miniapp/2",
   "id": "inbox",
   "name": "Operator Inbox",
-  "summary": "Operator Inbox keeps short items in collections that your agents can list and add to.",
+  "summary": "One queue where your agents ask you questions and request approvals, with the full history and every pending approval in one list.",
   "version": "0.1.0",
   "sdkMajor": 1,
-  "publisher": { "name": "Operator Inbox authors" },
-  "source": { "repo": "https://github.com/Martin-Atrin/opt2-tealbrick-inbox", "license": "MIT" },
-  "icon": { "svgPath": "M4 5h16v14H4z M8 9h8 M8 13h8 M8 17h5", "viewBox": "0 0 24 24" },
+  "publisher": {
+    "name": "Teal Brick"
+  },
+  "source": {
+    "repo": "https://github.com/Martin-Atrin/opt2-tealbrick-inbox",
+    "license": "MIT"
+  },
+  "icon": {
+    "svgPath": "M3 13h5l2 3h4l2-3h5 M5 5h14l2 8v6H3v-6z",
+    "viewBox": "0 0 24 24"
+  },
   "discovery": {
     "category": "productivity",
-    "intents": ["keep a list of items", "add an item to my collection", "list my items"],
-    "keywords": ["items", "list", "collection"]
+    "intents": [
+      "ask the owner a question",
+      "request the owner's approval",
+      "see everything that waits for my decision"
+    ],
+    "keywords": [
+      "inbox",
+      "approval",
+      "question",
+      "decision",
+      "holds"
+    ]
   },
   "runtime": {
-    "build": { "context": ".", "dockerfile": "Dockerfile" },
+    "build": {
+      "context": ".",
+      "dockerfile": "Dockerfile"
+    },
     "port": 8080,
     "healthPath": "/tb/v1/health",
-    "resources": { "cpu": 0.25, "memoryMb": 256 },
+    "resources": {
+      "cpu": 0.25,
+      "memoryMb": 256
+    },
     "volumes": [
-      { "id": "data", "mountPath": "/data", "sizeGb": 1, "purpose": "data" },
-      { "id": "backup", "mountPath": "/backup", "sizeGb": 2, "purpose": "backup" }
+      {
+        "id": "data",
+        "mountPath": "/data",
+        "sizeGb": 1,
+        "purpose": "data"
+      },
+      {
+        "id": "backup",
+        "mountPath": "/backup",
+        "sizeGb": 2,
+        "purpose": "backup"
+      }
     ]
   },
   "operations": [
     {
-      "id": "items_list",
-      "title": "List items",
-      "description": "List the newest items in one collection, or in every collection the caller may read.",
+      "id": "inbox_ask",
+      "title": "Ask the owner",
+      "description": "Put a question or an approval request in the owner's inbox. Returns an itemId at once; poll inbox_status for the answer. Never treat a missing, expired or unknown answer as approval.",
       "input": {
         "type": "object",
         "additionalProperties": false,
+        "required": [
+          "title",
+          "kind"
+        ],
         "properties": {
-          "collection": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "One line the owner sees in the list."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "question"
+            ],
+            "description": "approval: the owner approves or denies; question: the owner answers in words."
+          },
+          "context": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "What the owner needs to decide: facts, options, consequences."
+          },
+          "responses": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "deny",
+                "answer",
+                "clarify"
+              ]
+            },
+            "description": "Allowed answers. approval: a subset of approve, deny, clarify (default all three). question: a subset of answer, clarify (default both)."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "description": "Default normal."
+          },
+          "expiresInS": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 2592000,
+            "description": "Seconds until the item expires unanswered (default 7 days)."
+          }
         }
       },
       "output": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["items"],
+        "required": [
+          "itemId",
+          "status",
+          "expiresAt"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "agent"
+    },
+    {
+      "id": "inbox_status",
+      "title": "Read the owner's answer",
+      "description": "Read the state of one of your own inbox items: open, answered (with the response and the owner's message) or expired.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "kind",
+          "status",
+          "seenByOwner",
+          "response",
+          "message",
+          "decidedAt",
+          "expiresAt"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "question"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "seenByOwner": {
+            "type": "boolean"
+          },
+          "response": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify",
+              null
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decidedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent"
+    },
+    {
+      "id": "inbox_reply",
+      "title": "Add to an open item",
+      "description": "Add a message to one of your own open items (new facts, a correction). The owner sees it before deciding; an answer given on the older text is refused as stale.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "message",
+          "itemId"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "messageId"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "agent"
+    },
+    {
+      "id": "items_list",
+      "title": "List inbox items",
+      "description": "Items for the owner: pending (open, not snoozed; urgent first, then oldest), snoozed, done, or all.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "view": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "snoozed",
+              "done",
+              "all"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "cursor": {
+            "type": "string",
+            "pattern": "^[0-9]{1,6}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "nextCursor",
+          "counts"
+        ],
         "properties": {
           "items": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["id", "collection", "title", "createdAt"],
+              "required": [
+                "id",
+                "kind",
+                "title",
+                "from",
+                "status",
+                "priority",
+                "acked",
+                "snoozedUntil",
+                "response",
+                "version",
+                "createdAt",
+                "updatedAt",
+                "expiresAt"
+              ],
               "properties": {
-                "id": { "type": "string" },
-                "collection": { "type": "string" },
-                "title": { "type": "string" },
-                "createdAt": { "type": "string" }
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "approval",
+                    "question"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "answered",
+                    "expired"
+                  ]
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "normal",
+                    "high",
+                    "urgent"
+                  ]
+                },
+                "acked": {
+                  "type": "boolean"
+                },
+                "snoozedUntil": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "response": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "approve",
+                    "deny",
+                    "answer",
+                    "clarify",
+                    null
+                  ]
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pending",
+              "snoozed"
+            ],
+            "properties": {
+              "pending": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "snoozed": {
+                "type": "integer",
+                "minimum": 0
               }
             }
           }
         }
       },
-      "crud": ["read"],
+      "crud": [
+        "read"
+      ],
       "effect": "read",
-      "scopeType": "collection",
       "idempotency": "none",
       "receipt": false,
-      "audience": "agent"
+      "audience": "person"
     },
     {
-      "id": "item_create",
-      "title": "Create item",
-      "description": "Add an item to a collection the caller may write to (default: the caller's own collection).",
+      "id": "item_get",
+      "title": "Open an item",
+      "description": "One item with its context, messages, decision and alert deliveries.",
       "input": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title"],
+        "required": [
+          "itemId"
+        ],
         "properties": {
-          "collection": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          }
         }
       },
       "output": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "collection"],
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "from",
+          "status",
+          "priority",
+          "acked",
+          "snoozedUntil",
+          "response",
+          "version",
+          "createdAt",
+          "updatedAt",
+          "expiresAt",
+          "context",
+          "responses",
+          "messages",
+          "decision",
+          "deliveries"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "collection": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "question"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "id",
+              "name"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "agent",
+                  "app",
+                  "person"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ]
+          },
+          "acked": {
+            "type": "boolean"
+          },
+          "snoozedUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify",
+              null
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "context": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "responses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "deny",
+                "answer",
+                "clarify"
+              ]
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "author",
+                "body",
+                "createdAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "author": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "owner"
+                  ]
+                },
+                "body": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "decision": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "response",
+              "message",
+              "decidedBy",
+              "decidedAt"
+            ],
+            "properties": {
+              "response": {
+                "type": "string",
+                "enum": [
+                  "approve",
+                  "deny",
+                  "answer",
+                  "clarify"
+                ]
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "decidedBy": {
+                "type": "string"
+              },
+              "decidedAt": {
+                "type": "string"
+              }
+            }
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "channel",
+                "status",
+                "holdId",
+                "error",
+                "attempts",
+                "updatedAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "channel": {
+                  "type": "string",
+                  "enum": [
+                    "buzz",
+                    "channel"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "sent",
+                    "held",
+                    "failed"
+                  ]
+                },
+                "holdId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "attempts": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "updatedAt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       },
-      "crud": ["create"],
-      "effect": "write",
-      "scopeType": "collection",
-      "idempotency": "required",
-      "receipt": true,
-      "audience": "agent"
-    }
-  ],
-  "scopes": [
-    {
-      "type": "collection",
-      "label": "Collection",
-      "labelPlural": "Collections",
-      "access": [
-        { "id": "read", "label": "Read", "crud": ["read"] },
-        { "id": "read_write", "label": "Read and add", "crud": ["read", "create"] }
+      "crud": [
+        "read"
       ],
-      "defaultGrants": [{ "kind": "own", "access": "read_write" }],
-      "summaryTemplate": "{count} {labelPlural} ({access.read_write} writable)"
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "item_decide",
+      "title": "Answer an item",
+      "description": "Approve, deny, answer or ask for clarification. `version` is the item version you saw; a changed, answered or expired item is refused.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "version",
+          "response"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "response": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "status",
+          "response",
+          "decidedAt"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "response": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify"
+            ]
+          },
+          "decidedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "item_snooze",
+      "title": "Snooze an item",
+      "description": "Hide an open item from the pending list until a time (ISO 8601, in the future, at most 30 days); null wakes it now.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "until"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "from",
+          "status",
+          "priority",
+          "acked",
+          "snoozedUntil",
+          "response",
+          "version",
+          "createdAt",
+          "updatedAt",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "question"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "id",
+              "name"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "agent",
+                  "app",
+                  "person"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ]
+          },
+          "acked": {
+            "type": "boolean"
+          },
+          "snoozedUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify",
+              null
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "item_priority",
+      "title": "Change priority",
+      "description": "Set the priority of an open item.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "priority"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ]
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "from",
+          "status",
+          "priority",
+          "acked",
+          "snoozedUntil",
+          "response",
+          "version",
+          "createdAt",
+          "updatedAt",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "question"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "id",
+              "name"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "agent",
+                  "app",
+                  "person"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ]
+          },
+          "acked": {
+            "type": "boolean"
+          },
+          "snoozedUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify",
+              null
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "item_ack",
+      "title": "Mark as seen",
+      "description": "Tell the agent that the owner has seen an open item (it reads seenByOwner).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 64,
+            "pattern": "^itm_[0-9A-Za-z]+$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "from",
+          "status",
+          "priority",
+          "acked",
+          "snoozedUntil",
+          "response",
+          "version",
+          "createdAt",
+          "updatedAt",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "question"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "id",
+              "name"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "agent",
+                  "app",
+                  "person"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "answered",
+              "expired"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ]
+          },
+          "acked": {
+            "type": "boolean"
+          },
+          "snoozedUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "approve",
+              "deny",
+              "answer",
+              "clarify",
+              null
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "holds_overview",
+      "title": "Pending approvals",
+      "description": "Everything that waits for the owner: open Inbox items, and the pending holds of all apps once the workspace supports it.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "unavailable",
+          "rows",
+          "errors"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "inbox_only",
+              "all_apps"
+            ]
+          },
+          "unavailable": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "product",
+                "id",
+                "op",
+                "family",
+                "reason",
+                "summary",
+                "caller",
+                "createdAt",
+                "ageS",
+                "decidePath"
+              ],
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "family": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "caller": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "ageS": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "decidePath": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "product",
+                "code"
+              ],
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "alerts_get",
+      "title": "Read alert settings",
+      "description": "The owner alert setting: off (default), a Buzz DM, or a channel DM through Connect.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dm",
+          "buzzTo",
+          "channelAccount",
+          "channelPerson"
+        ],
+        "properties": {
+          "dm": {
+            "type": "string",
+            "enum": [
+              "off",
+              "buzz",
+              "channel"
+            ]
+          },
+          "buzzTo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "channelAccount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "channelPerson": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "alerts_set",
+      "title": "Change alert settings",
+      "description": "Turn the owner alert DM on or off. The DM goes out through Connect and may wait for the owner's approval there.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dm",
+          "buzzTo",
+          "channelAccount",
+          "channelPerson"
+        ],
+        "properties": {
+          "dm": {
+            "type": "string",
+            "enum": [
+              "off",
+              "buzz",
+              "channel"
+            ]
+          },
+          "buzzTo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "channelAccount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "channelPerson": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dm",
+          "buzzTo",
+          "channelAccount",
+          "channelPerson"
+        ],
+        "properties": {
+          "dm": {
+            "type": "string",
+            "enum": [
+              "off",
+              "buzz",
+              "channel"
+            ]
+          },
+          "buzzTo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "channelAccount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "channelPerson": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
     }
   ],
-  "skills": [{ "id": "use-inbox", "title": "How to use Operator Inbox", "file": "skills/use-inbox/SKILL.md" }],
-  "backups": { "schedule": "30 2 * * *", "retain": 7 },
-  "ui": { "launchPath": "/", "configurePath": "/configure" }
+  "companions": [
+    {
+      "product": "connect",
+      "operations": [
+        "buzz_dm",
+        "channel_dm"
+      ],
+      "crud": [
+        "create"
+      ],
+      "purpose": "Optional owner alert: a direct message when an agent puts a new item in the inbox (off by default)."
+    }
+  ],
+  "skills": [
+    {
+      "id": "use-inbox",
+      "title": "Ask the owner through Operator Inbox",
+      "file": "skills/use-inbox/SKILL.md"
+    }
+  ],
+  "backups": {
+    "schedule": "30 2 * * *",
+    "retain": 7
+  },
+  "ui": {
+    "launchPath": "/",
+    "configurePath": "/configure"
+  }
 }
