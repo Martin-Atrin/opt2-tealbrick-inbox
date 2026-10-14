@@ -43,7 +43,7 @@ operation id (`src/app.ts`) and plain migrations (`migrations/`).
 | `src/alerts.ts` | optional owner alert DM through Connect (companion call; off by default; held sends repeated with the same input and key) |
 | `src/holds.ts` | holds overview: Inbox items + all apps' pending holds (`tb.holds_pending` via `ctx.companionTargets()`, owner consent), Portal links |
 | `src/main.ts` | `startApp(app, process.env)` |
-| `src/ui/` | React UI (`<TbProvider>` + `<AppShell>` from `@opt2-tealbrick/ui`), built to `dist/ui` |
+| `src/ui/` | React UI (`<TbProvider>` + `<AppShell>` from `@opt2-tealbrick/ui`; `standard.tsx` + `pages.css` are the template copies, `app.css` is this app's layout), built to `dist/ui` |
 | `migrations/0001_init.sql` | baseline; forward-only, never edit a released file |
 | `skills/use-inbox/SKILL.md` | the agent skill (frontmatter `name`, `description`) |
 | `scripts/build-ui.ts` | UI build without a bundler (tsc output + vendored modules + import map) |
@@ -87,3 +87,7 @@ image name in `tealbrick-ci.json` (`opt2-tealbrick-inbox`).
 ## Dependency pins and caching
 - `pnpm-lock.yaml` carries the sha512 integrity of every GitHub-release tarball (CI rule ci-v8). After changing an `@opt2-tealbrick/*` dependency run `pnpm install`, then `node <opt2-tealbrick-platform>/ci/tb-ci.ts pin-tarballs .`, then `pnpm install --frozen-lockfile`, and commit the lockfile. Image builds run `pnpm install --frozen-lockfile --ignore-scripts`.
 - `pnpm build` writes the UI to `dist/ui/index.html` + `dist/ui/assets-<content hash>/`; the SDK serves index.html `no-cache` and the hashed directory immutable, so a deploy is visible at once (C61).
+
+## Licence
+
+Apache-2.0 (`LICENSE`, `NOTICE`). The built UI vendors React (MIT), the Tealbrick kit and Nunito (SIL OFL 1.1); the Tealbrick brand mark and app stills are Tealbrick artwork and are not covered by the Apache licence. See `THIRD_PARTY_NOTICES.md`.

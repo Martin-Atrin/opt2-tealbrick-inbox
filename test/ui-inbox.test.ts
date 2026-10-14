@@ -1,0 +1,313 @@
+// The Operator Inbox pages (Inbox + item, All approvals, Settings) against the real SDK client and a stub server.
+// RUL-01 (every Approve / Deny / answer / ack / priority / snooze / save failure shows a plain message, never a dropped
+// rejection), RUL-14 (a failed load is an error with Try again), one call at a time per item. The pages are compiled with
+// the build tsconfig into dist/ui-test-inbox (JSX needs a compile) and rendered in happy-dom.
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { after, before, describe, it } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Window } from "happy-dom";
+import type { ReactElement } from "react";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const outDir = join(root, "dist", "ui-test-inbox");
+
+// ── DOM ────────────────────────────────────────────────────────────────────
+const win = new Window({ url: "http://localhost/a/inbox/", width: 1280, height: 860 });
+const g = globalThis as Record<string, unknown>;
+for (const k of ["window", "document", "navigator", "location", "history", "HTMLElement", "HTMLButtonElement", "HTMLDialogElement", "Element", "Node", "Event", "MouseEvent", "KeyboardEvent", "MutationObserver"]) {
+  const v = (win as unknown as Record<string, unknown>)[k];
+  if (v === undefined) continue;
+  try {
+    g[k] = v;
+  } catch {
+    Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  }
+}
+g.IS_REACT_ACT_ENVIRONMENT = true;
+
+// ── stub server (the person ops under /a/inbox/tb/v1/) ──────────────────────
+const ITEM = "itm_01JI1000000000000000000000";
+const now = new Date().toISOString();
+const later = new Date(Date.now() + 86_400_000).toISOString();
+const item = (over: Record<string, unknown> = {}) => ({
+  id: ITEM,
+  kind: "approval",
+  title: "Publish the release notes?",
+  from: { type: "agent", id: "agt_1", name: "Scout" },
+  status: "open",
+  priority: "high",
+  acked: false,
+  snoozedUntil: null,
+  response: null,
+  version: 1,
+  createdAt: now,
+  updatedAt: now,
+  expiresAt: later,
+  context: "Draft attached.",
+  responses: ["approve", "deny", "clarify"],
+  messages: [],
+  decision: null,
+  deliveries: [],
+  ...over,
+});
+const overview = {
+  source: "all_apps",
+  unavailable: null,
+  rows: [
+    { product: "kanban", id: "hld_1", op: "issue_delete", family: null, reason: null, summary: "Delete issue “Old price list”", caller: { type: "agent", id: "a", name: "Research partner" }, createdAt: now, ageS: 60, decidePath: "/holds/hld_1", openUrl: "https://portal.example.test/open" },
+    { product: "inbox", id: ITEM, op: "inbox_ask", family: null, reason: "approval requested", summary: "Publish the release notes?", caller: { type: "agent", id: "a", name: "Scout" }, createdAt: now, ageS: 60, decidePath: `/items/${ITEM}`, openUrl: null },
+    { product: "connect", id: "hld_2", op: "dm_send", family: null, reason: null, summary: "DM #1", caller: { type: "agent", id: "a", name: "Scout" }, createdAt: now, ageS: 60, decidePath: "/holds/hld_2", openUrl: null },
+  ],
+  errors: [{ product: "rules", code: "app_unavailable" }],
+};
+
+interface Stub {
+  calls: { op: string; input: Record<string, unknown> }[];
+  fail: Record<string, { status: number; code: string; message?: string } | undefined>;
+  gate: Record<string, Promise<void> | undefined>;
+  networkDown: boolean;
+  answers: Record<string, unknown>;
+}
+const stub: Stub = { calls: [], fail: {}, gate: {}, networkDown: false, answers: {} };
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const reset = (answers: Record<string, unknown> = {}) => {
+  stub.calls = [];
+  stub.fail = {};
+  stub.gate = {};
+  stub.networkDown = false;
+  stub.answers = { item_get: item(), holds_overview: overview, alerts_get: { dm: "buzz", buzzTo: "npub1abc", channelAccount: null, channelPerson: null }, alerts_set: { dm: "buzz", buzzTo: "npub1abc", channelAccount: null, channelPerson: null }, item_decide: {}, item_ack: item(), item_priority: item(), item_snooze: item(), ...answers };
+};
+
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (stub.networkDown) throw new TypeError("fetch failed");
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+  const path = url.pathname.replace("/a/inbox/tb/v1/", "");
+  if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: [] });
+  const op = /^ops\/(.+)$/.exec(path)?.[1];
+  if (!op) return json(404, { error: { code: "not_found", message: "not found" } });
+  const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
+  stub.calls.push({ op, input: body.input ?? {} });
+  await stub.gate[op];
+  const failure = stub.fail[op];
+  if (failure) return json(failure.status, { error: { code: failure.code, message: failure.message ?? `raw upstream text for ${failure.code}`, requestId: "req_1" } });
+  if (op in stub.answers) return json(200, { status: "ok", output: stub.answers[op] });
+  return json(404, { error: { code: "not_found", message: op } });
+}) as typeof fetch;
+
+// ── React ──────────────────────────────────────────────────────────────────
+const { act, createElement: h } = await import("react");
+const { createRoot } = await import("react-dom/client");
+const { TbProvider } = await import("@opt2-tealbrick/miniapp-sdk/client");
+
+async function flush() {
+  for (let i = 0; i < 4; i++) await act(async () => new Promise((r) => setTimeout(r, 0)));
+}
+async function mount(el: ReactElement) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const r = createRoot(host);
+  await act(async () => r.render(h(TbProvider, { product: "inbox" }, el)));
+  await flush();
+  return {
+    host,
+    unmount: async () => {
+      await act(async () => r.unmount());
+      host.remove();
+    },
+  };
+}
+const click = (el: Element) => act(async () => (el as HTMLElement).click());
+const button = (host: Element, text: string) => {
+  const found = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
+  assert.ok(found, `button "${text}"`);
+  return found as HTMLButtonElement;
+};
+const alerts = (host: Element) => [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent ?? "");
+const decides = () => stub.calls.filter((c) => c.op === "item_decide");
+
+type Pages = { InboxPage: (p: { selected: string | null; onSelect: (id: string) => void; onCounts: (n: number) => void; hrefOf: (id: string) => string }) => ReactElement; ApprovalsPage: (p: { onOpenItem: (id: string) => void; itemHref: (id: string) => string }) => ReactElement; SettingsPage: () => ReactElement };
+let pages: Pages;
+before(() => {
+  const tsc = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json", "--outDir", outDir], { cwd: root, encoding: "utf8" });
+  assert.equal(tsc.status, 0, `${tsc.stdout}${tsc.stderr}`);
+});
+before(async () => {
+  const at = (f: string) => import(pathToFileURL(join(outDir, "ui", f)).href);
+  pages = { ...(await at("inbox.js")), ...(await at("approvals.js")), ...(await at("settings.js")) } as Pages;
+});
+after(() => rmSync(outDir, { recursive: true, force: true }));
+
+const inbox = () => h(pages.InboxPage, { selected: ITEM, onSelect: () => {}, onCounts: () => {}, hrefOf: (id: string) => `items/${id}` });
+const pick = async (host: Element, label: string, option: string) => {
+  const trigger = [...host.querySelectorAll('[role="combobox"]')].find((t) => t.closest(".tb-field")?.querySelector(".tb-label")?.textContent === label);
+  assert.ok(trigger, `select "${label}"`);
+  await click(trigger);
+  const opt = [...host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes(option));
+  assert.ok(opt, `option "${option}"`);
+  await click(opt);
+  await flush();
+};
+
+describe("Inbox item", () => {
+  it("shows the item, the thread and Approve (primary) / Deny (danger) / Ask for clarification", async () => {
+    reset({ items_list: { items: [], nextCursor: null, counts: { pending: 0, snoozed: 0 } }, item_get: item({ messages: [{ id: "m1", author: "agent", body: "Also tag v0.2.0.", createdAt: now }] }) });
+    const m = await mount(inbox());
+    assert.equal(m.host.querySelector(".detail h2")?.textContent, "Publish the release notes?");
+    assert.match(m.host.querySelector(".msgs")?.textContent ?? "", /Also tag v0\.2\.0\./);
+    assert.ok(button(m.host, "Approve").className.includes("primary"));
+    assert.ok(button(m.host, "Deny").className.includes("danger"));
+    assert.ok(button(m.host, "Ask for clarification").disabled, "clarify needs a message");
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("RUL-01: a refused Approve shows the server's plain sentence in an alert; the buttons come back", async () => {
+    reset({ items_list: { items: [], nextCursor: null, counts: { pending: 0, snoozed: 0 } } });
+    stub.fail.item_decide = { status: 409, code: "already_decided", message: "The item was already answered (deny)." };
+    const m = await mount(inbox());
+    await click(button(m.host, "Approve"));
+    await flush();
+    assert.deepEqual(alerts(m.host), ["The item was already answered (deny)."]);
+    assert.ok(!button(m.host, "Approve").disabled);
+    await m.unmount();
+  });
+
+  it("RUL-01: Deny, Mark as seen and the selects show a plain message for an upstream error, a lost network and a signed-out session", async () => {
+    reset({ items_list: { items: [], nextCursor: null, counts: { pending: 0, snoozed: 0 } } });
+    const m = await mount(inbox());
+    stub.fail.item_decide = { status: 500, code: "internal_error" };
+    await click(button(m.host, "Deny"));
+    await flush();
+    assert.deepEqual(alerts(m.host), ["Something went wrong. Try again in a moment."]);
+    stub.fail.item_ack = { status: 401, code: "session_required" };
+    await click(button(m.host, "Mark as seen"));
+    await flush();
+    assert.match(alerts(m.host)[0] ?? "", /signed out/);
+    stub.fail.item_ack = undefined;
+    stub.networkDown = true;
+    await pick(m.host, "Priority", "Low");
+    assert.match(alerts(m.host)[0] ?? "", /reach the app/);
+    await pick(m.host, "Snooze", "1 hour");
+    assert.match(alerts(m.host)[0] ?? "", /reach the app/);
+    for (const text of alerts(m.host)) assert.doesNotMatch(text, /raw upstream/);
+    await m.unmount();
+  });
+
+  it("an answer sends the read version and the message, then says so; a double click sends one call", async () => {
+    reset({ items_list: { items: [], nextCursor: null, counts: { pending: 0, snoozed: 0 } } });
+    let release = () => {};
+    stub.gate.item_decide = new Promise<void>((r) => {
+      release = r;
+    });
+    const m = await mount(inbox());
+    const approve = button(m.host, "Approve");
+    await act(async () => {
+      approve.click();
+      approve.click();
+    });
+    assert.ok(approve.disabled && button(m.host, "Deny").disabled);
+    release();
+    await flush();
+    assert.equal(decides().length, 1);
+    assert.deepEqual(decides()[0]?.input, { itemId: ITEM, version: 1, response: "approve" });
+    assert.match(m.host.querySelector(".detail .tb-notice.live")?.textContent ?? "", /Answer sent/);
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("a stale answer asks the owner to read the new message first", async () => {
+    reset({ items_list: { items: [], nextCursor: null, counts: { pending: 0, snoozed: 0 } } });
+    stub.answers.item_get = item();
+    const m = await mount(inbox());
+    stub.fail.item_decide = { status: 409, code: "stale_version", message: "x" };
+    stub.answers.item_get = item({ version: 2, messages: [{ id: "m2", author: "agent", body: "New fact.", createdAt: now }] });
+    await click(button(m.host, "Approve"));
+    await flush();
+    const texts = alerts(m.host);
+    assert.ok(texts.some((t) => t.includes("The agent added a message while you were reading. Read it, then answer again.")), texts.join(" | "));
+    assert.ok(texts.some((t) => t.includes("Read it before you answer.")), texts.join(" | "));
+    assert.match(m.host.querySelector(".msgs")?.textContent ?? "", /New fact\./);
+    await click(button(m.host, "I have read it"));
+    assert.equal(m.host.querySelector(".tb-notice.needs-you button"), null, "the unread notice is gone once read");
+    await m.unmount();
+  });
+});
+
+describe("Inbox list", () => {
+  it("RUL-14: a failed list load is an alert with Try again, not an empty state", async () => {
+    reset();
+    stub.fail.items_list = { status: 500, code: "internal_error" };
+    const m = await mount(h(pages.InboxPage, { selected: null, onSelect: () => {}, onCounts: () => {}, hrefOf: (id: string) => `items/${id}` }));
+    assert.match(alerts(m.host)[0] ?? "", /Something went wrong/);
+    assert.equal(m.host.querySelector(".inbox .ruled .tb-empty"), null);
+    assert.equal(m.host.querySelectorAll(".inbox-row").length, 0);
+    stub.fail.items_list = undefined;
+    stub.answers.items_list = { items: [{ ...item(), snoozedUntil: null }], nextCursor: null, counts: { pending: 1, snoozed: 0 } };
+    await click(button(m.host, "Try again"));
+    await flush();
+    assert.equal(m.host.querySelectorAll(".inbox-row").length, 1);
+    await m.unmount();
+  });
+});
+
+describe("All approvals", () => {
+  it("names each app (production names), links to its decision page, shows the per-app read error", async () => {
+    reset();
+    const m = await mount(h(pages.ApprovalsPage, { onOpenItem: () => {}, itemHref: (id: string) => `items/${id}` }));
+    const rows = [...m.host.querySelectorAll(".item")];
+    assert.equal(rows.length, 3);
+    assert.match(rows[0]?.textContent ?? "", /Task Board/);
+    assert.equal(rows[0]?.querySelector("a")?.textContent, "Open in Task Board");
+    assert.equal(rows[0]?.querySelector("a")?.getAttribute("href"), "https://portal.example.test/open");
+    assert.equal(rows[1]?.querySelector("a")?.textContent, "Open");
+    assert.match(rows[2]?.textContent ?? "", /Open Connect from Portal to decide/);
+    assert.match(alerts(m.host)[0] ?? "", /Rules & Approvals: its approvals could not be read \(app_unavailable\)/);
+    await m.unmount();
+  });
+
+  it("RUL-14: a failed load is an alert with Try again", async () => {
+    reset();
+    stub.fail.holds_overview = { status: 500, code: "internal_error" };
+    const m = await mount(h(pages.ApprovalsPage, { onOpenItem: () => {}, itemHref: (id: string) => id }));
+    assert.match(alerts(m.host)[0] ?? "", /Something went wrong/);
+    assert.equal(m.host.querySelector(".tb-empty"), null);
+    stub.fail.holds_overview = undefined;
+    await click(button(m.host, "Try again"));
+    await flush();
+    assert.equal(m.host.querySelectorAll(".item").length, 3);
+    await m.unmount();
+  });
+});
+
+describe("Settings", () => {
+  it("saves the alert settings; a refused save shows the server's sentence in an alert", async () => {
+    reset();
+    const m = await mount(h(pages.SettingsPage, {}));
+    assert.equal(m.host.querySelector("h1")?.textContent, "Settings");
+    await click(button(m.host, "Save"));
+    await flush();
+    assert.equal(stub.calls.filter((c) => c.op === "alerts_set").length, 1);
+    assert.match(m.host.querySelector(".tb-notice.live")?.textContent ?? "", /Saved\./);
+    stub.fail.alerts_set = { status: 400, code: "alerts_invalid", message: "buzzTo must be your Buzz key (npub1… or 64 hex characters)." };
+    await click(button(m.host, "Save"));
+    await flush();
+    assert.deepEqual(alerts(m.host), ["buzzTo must be your Buzz key (npub1… or 64 hex characters)."]);
+    await m.unmount();
+  });
+
+  it("RUL-14: a failed load is an alert with Try again, not a blank form", async () => {
+    reset();
+    stub.fail.alerts_get = { status: 500, code: "internal_error" };
+    const m = await mount(h(pages.SettingsPage, {}));
+    assert.match(alerts(m.host)[0] ?? "", /Something went wrong/);
+    assert.equal(m.host.querySelector(".tb-section"), null);
+    stub.fail.alerts_get = undefined;
+    await click(button(m.host, "Try again"));
+    await flush();
+    assert.ok(m.host.querySelector(".tb-section"));
+    await m.unmount();
+  });
+});

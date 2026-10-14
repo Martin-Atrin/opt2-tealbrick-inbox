@@ -4,14 +4,14 @@
   "id": "inbox",
   "name": "Operator Inbox",
   "summary": "One queue where your agents ask you questions and request approvals, with the full history and every pending approval in one list.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "sdkMajor": 1,
   "publisher": {
     "name": "Teal Brick"
   },
   "source": {
     "repo": "https://github.com/Martin-Atrin/opt2-tealbrick-inbox",
-    "license": "MIT"
+    "license": "Apache-2.0"
   },
   "icon": {
     "svgPath": "M3 13h5l2 3h4l2-3h5 M5 5h14l2 8v6H3v-6z",
