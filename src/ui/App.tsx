@@ -2,9 +2,10 @@
 // (every app's holds), the standard Holds and Agents & scopes pages (./standard.tsx), and Settings (the optional owner alert DM).
 // Only two server paths exist (manifest ui.launchPath "/" and ui.configurePath "/configure"); the other pages are
 // `?page=<id>` on the launch path, `?item=<id>` / `/items/<id>` opens one item and `/holds/<id>` one hold.
-import { useSession } from "@opt2-tealbrick/miniapp-sdk/client";
+import { callOp, useSession } from "@opt2-tealbrick/miniapp-sdk/client";
 import { AppShell, appArt, appColour, Button, Notice, STANDARD_PAGES, Tag } from "@opt2-tealbrick/ui";
 import { useEffect, useState } from "react";
+import type { ItemsListOutput } from "#kit";
 import { ApprovalsPage } from "./approvals.tsx";
 import { InboxPage } from "./inbox.tsx";
 import { SettingsPage } from "./settings.tsx";
@@ -57,6 +58,22 @@ export function App() {
     globalThis.history.pushState(null, "", href(page, item));
     setLoc({ page, item });
   };
+  const signedIn = status === "signed_in" && principal;
+  // The nav count on every page (C185): one read of the pending count when the owner is signed in. No polling; the
+  // Inbox page keeps it current through onCounts, and its newer value wins. A failed read leaves the badge as it was.
+  const ready = Boolean(signedIn);
+  useEffect(() => {
+    if (!ready) return;
+    let live = true;
+    callOp<ItemsListOutput>("items_list", { view: "pending", limit: 1 })
+      .then((d) => {
+        if (live) setPending((p) => p ?? d.counts.pending);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [ready]);
   const pages = [
     { id: "inbox", label: "Inbox", badge: pending || null },
     { id: "approvals", label: "All approvals" },
@@ -64,7 +81,6 @@ export function App() {
     { id: "agents", label: std("agents") },
     { id: "settings", label: "Settings" },
   ];
-  const signedIn = status === "signed_in" && principal;
   return (
     <AppShell
       title={NAME}

@@ -41,9 +41,8 @@ export function SettingsPage() {
       ) : (
         <Section title="Alerts" first>
           <p className="tb-soft measure">
-            New items always show in this inbox and in the Tealbrick desktop badge. You can also get a direct message for each new item. The message goes out through Connect from the workspace
-            sender you choose on Connect’s Senders page, so Connect must be in your workspace. Connect asks you to approve the first message to a new person; later alerts go out at once unless
-            you turn on approval for every message in the workspace apps policy.
+            New items always show in this inbox and in the Tealbrick desktop badge. You can also get a direct message for each new item. It goes out through Connect from the workspace
+            sender you choose on Connect’s Senders page.
           </p>
           <div className="tb-stack form">
             <Field label="Direct message">
@@ -53,7 +52,7 @@ export function SettingsPage() {
                 options={[
                   { value: "off", label: "Off" },
                   { value: "buzz", label: "Buzz DM" },
-                  { value: "channel", label: "Slack or Telegram DM" },
+                  { value: "channel", label: "Slack or Telegram DM", meta: "a Connect channel account" },
                 ]}
               />
             </Field>

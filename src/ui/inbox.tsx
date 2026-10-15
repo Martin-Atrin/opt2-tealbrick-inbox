@@ -6,7 +6,7 @@ import { callOp, TbError } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, EmptyState, Field, Notice, Select, type Status, Tabs, Tag, Textarea } from "@opt2-tealbrick/ui";
 import { type MouseEvent, useEffect, useRef, useState } from "react";
 import type { ItemGetOutput, ItemsListOutput } from "#kit";
-import { ago, errText, Head, LoadError, Loading, useOp, when, whenShort } from "./shared.tsx";
+import { ago, day, errText, Head, LoadError, Loading, useOp, when, whenShort } from "./shared.tsx";
 
 type View = "pending" | "snoozed" | "done" | "all";
 type Summary = ItemsListOutput["items"][number];
@@ -114,7 +114,7 @@ function Detail({ id, onChanged }: { id: string; onChanged: () => void }) {
         {open ? <Tag status="needs-you">waiting for you</Tag> : <Tag status={item.status === "answered" ? "live" : "default"}>{item.status}</Tag>}
         <Tag status={PRIORITY_STATUS[item.priority]}>{PRIORITY_LABEL[item.priority]}</Tag>
         {item.acked && open ? <Tag>seen</Tag> : null}
-        {open ? <span className="tb-hint">Expires {when(item.expiresAt)}</span> : null}
+        {open ? <span className="tb-hint">Expires {day(item.expiresAt)}</span> : null}
       </div>
       {item.context ? <p className="tb-soft pre">{item.context}</p> : <p className="tb-hint">The agent gave no further context.</p>}
       {item.messages.length > 0 ? (
@@ -134,7 +134,7 @@ function Detail({ id, onChanged }: { id: string; onChanged: () => void }) {
       ) : null}
       {item.status === "expired" ? <Notice tone="needs-you">This item expired before it was answered. The agent must ask again.</Notice> : null}
       {unread ? (
-        <Notice tone="needs-you" role="alert">
+        <Notice tone="needs-you" role="alert" className="with-action">
           <span className="tb-row">
             <span>
               <strong>The agent added a message after you opened this item.</strong> Read it before you answer.
@@ -148,7 +148,7 @@ function Detail({ id, onChanged }: { id: string; onChanged: () => void }) {
       {open ? (
         <>
           <Field label="Message to the agent" hint="Needed to answer or to ask for clarification; optional for approve and deny.">
-            <Textarea rows={4} maxLength={4000} value={message} onChange={(e) => setMessage(e.target.value)} />
+            <Textarea rows={2} maxLength={4000} value={message} onChange={(e) => setMessage(e.target.value)} />
           </Field>
           <div className="tb-ctas">
             {item.responses.map((r) => (
@@ -229,7 +229,7 @@ export function InboxPage({ selected, onSelect, onCounts, hrefOf }: { selected: 
     <section className="app-page" aria-label="Inbox">
       <Head title="Inbox" />
       <div className="inbox">
-        <div className="tb-stack">
+        <div className="tb-stack inbox-list">
           <Tabs
             label="Show"
             value={view}

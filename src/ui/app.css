@@ -2,11 +2,12 @@
 
 .inbox { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--tb-s6); align-items: start; }
 .inbox > * { min-width: 0; }
+.inbox-list { gap: var(--tb-s3); }
 .inbox-row { display: grid; gap: var(--tb-s1); padding: 14px 12px; color: var(--tb-ink); text-decoration: none; border-radius: var(--tb-radius-brick); }
 .inbox-row:hover { background: var(--tb-tile); }
-.inbox-row[aria-current="true"] { background: var(--tb-tile); box-shadow: var(--tb-ring-ink); }
+.inbox-row[aria-current="true"] { background: var(--tb-tile); box-shadow: inset 0 0 0 calc(var(--tb-s1) / 2) var(--tb-ink); } /* mockup 2px ink ring */
 .inbox-row b { font-weight: var(--tb-weight-label); line-height: 22px; overflow-wrap: anywhere; }
-.inbox-row .tb-row { gap: var(--tb-s2); }
+.inbox-row .tb-row { gap: calc(var(--tb-s1) * 1.5); } /* mockup 6px */
 
 .inbox .meta, .detail .meta { color: var(--tb-muted); font-size: var(--tb-text-tag); font-weight: var(--tb-weight-nav); line-height: 20px; }
 .detail { display: grid; gap: var(--tb-s4); padding: var(--tb-s6); border-radius: var(--tb-radius-brick); background: var(--tb-tile); box-shadow: var(--tb-ring-strong); }
@@ -15,9 +16,14 @@
 .detail .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msgs { display: grid; gap: var(--tb-s2); margin: 0; padding: 12px 0; list-style: none; box-shadow: var(--tb-hair-top), var(--tb-hair-bottom); }
 .msgs p { color: var(--tb-ink-soft); }
-.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: var(--tb-s3); }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--tb-s3); }
+.detail .tb-textarea { min-height: calc(var(--tb-s10) * 2 + var(--tb-s2)); } /* mockup 88px */
+/* a Notice with one action: the text left, the button right on the same row (mockup "I have read it") */
+.with-action > span { flex: 1; min-width: 0; }
+.with-action .tb-row { flex-wrap: nowrap; align-items: start; justify-content: space-between; }
+.with-action .tb-btn { flex: none; }
 
 .measure { max-width: 62ch; }
-.form { max-width: 420px; padding-bottom: var(--tb-s6); } /* room for the open Direct message list above Save */
+.form { max-width: 420px; padding-bottom: var(--tb-s2); } /* the open Direct message list (Buzz DM chosen) must end above Save, not cut it */
 
 @media (max-width: 960px) { .inbox { grid-template-columns: 1fr; } }

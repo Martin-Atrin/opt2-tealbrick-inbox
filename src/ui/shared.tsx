@@ -21,9 +21,13 @@ export const ago = (iso: string) => {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
 };
+// Dates as the approved mockup shows them (C185): fixed "en-GB" and a 24-hour clock, so every owner sees one form.
 /** Short form for tight places (a select option): "15 Oct, 08:40". */
-export const whenShort = (iso: string) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-export const when = (iso: string) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+export const whenShort = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+/** "13 Oct 2026, 09:58". */
+export const when = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+/** The date only: "20 Oct 2026". */
+export const day = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
 /** Loads one person op; `reload()` refetches; `every` ms polls while the page is open. The error of the last load is kept next to the data. */
 export function useOp<O>(op: string, input: Record<string, unknown>, every = 0): { data: O | null; error: string | null; reload: () => void } {
