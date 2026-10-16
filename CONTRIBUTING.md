@@ -41,6 +41,6 @@ UI changes need a rendered check (contrast, ink centring, every kit Select opene
 
 1. Bump `package.json` and the manifest `version` together (they must match).
 2. Update the manifest only for intended contract changes. A new op needs: input and output schema, CRUD class, effect, a hold family for outward, identity and money effects, a skill mention, and a conformance run.
-3. Upgrade safety (C207 point 2): every release must pass an automated upgrade test from the previous stable version with seeded data; destructive schema change only through expand, migrate, contract across two releases; pre-update backup; health-gated rollback. Not built yet: UNVERIFIED.
+3. Upgrade safety (C207 point 2): every release must pass an automated upgrade test from the previous stable version with seeded data; destructive schema change only through expand, migrate, contract across two releases; pre-update backup; health-gated rollback. State: SDK 0.1.25 writes the pre-update snapshot and Core's rollback uses it (see `ARCHITECTURE.md`, Pinned packages). This repo's `tealbrick-ci.json` declares no `preReleaseChecks`, so no automated upgrade test from the previous stable version runs here.
 4. Green pipeline, tag `v<x.y.z>`. Dispatch `registry-sync`; check the entry.
 5. Update on qa1 (one app at a time, owner path), run the QA regression, then it is a candidate for the next release set. Never roll qa1 from the release itself.

@@ -2,7 +2,7 @@
 
 Operator Inbox (product id `inbox`): the one queue from agents to the owner. Questions and approval requests, decisions with full history, and the pending holds of all apps in one list. The owner is the only approver. Built on the Miniapp SDK.
 
-**Status:** 0.2.8. Visibility: public, Apache-2.0. Published as the GHCR image `ghcr.io/tealbrick/opt2-tealbrick-inbox`.
+**Status:** stable 0.2.8; `main` is 0.2.9-dev.1 (dev channel only). Visibility: public, Apache-2.0. Image: `ghcr.io/tealbrick/opt2-tealbrick-inbox` (publicly pullable; as of 2026-10-17 it holds the tag 0.2.9-dev.1; 0.2.8 and older were published under the former owner's GHCR namespace).
 
 - Repository: `Tealbrick/opt2-tealbrick-inbox` (GitHub organisation `Tealbrick`)
 - Licence: Apache-2.0 for the app code (`LICENSE`, `NOTICE`). The built UI vendors React (MIT), the Tealbrick kit and Nunito (SIL OFL 1.1); see `THIRD_PARTY_NOTICES.md`. The Tealbrick brand mark and app stills are Tealbrick artwork and are not covered by the Apache-2.0 licence.
@@ -14,7 +14,7 @@ This repository is public. It must never contain secrets or personal data, and n
 - No API keys, tokens, passwords, private keys, deployment secrets, `.env` files or connection strings. Use `.env.example` with placeholder values only.
 - Runtime secrets live in the deployment platform (Railway variables) and are copied between services without printing them.
 - No personal names, private agent configurations or customer data.
-- Every push runs a secret scan (gitleaks, the `secret-scan` step in `.woodpecker/ci.yaml`). GitHub secret scanning with push protection is enabled. Optional local guard: `pre-commit install`.
+- Every pull request, every push to `main` and every tag runs a secret scan (gitleaks, the `secret-scan` step in `.woodpecker/ci.yaml`). GitHub secret scanning and push protection are not enabled on this repository, so the CI scan is the guard. Optional local guard: `pre-commit install` (`.pre-commit-config.yaml` runs gitleaks).
 - If a secret is committed anyway: rotate it first, then remove it from history.
 
 ## App
@@ -76,7 +76,7 @@ Before its first claim the SDK checks that `TB_DATA_DIR` is a mounted volume; on
 
 1. Set the same version in `package.json` and `tealbrick.manifest.json`.
 2. Tag `v<semver>` (for example `v0.2.8`) on a green pipeline and push the tag. Tags are immutable.
-3. The release Action builds and pushes the GHCR image and the kit tarball, then writes the signed release record from the manifest. `registry-sync` signs the index entry with the image digest and the manifest digest.
+3. The release Action (`.github/workflows/opt2-release.yml`) builds and pushes the GHCR image and attaches the kit tarball. The Woodpecker `release-record` step validates and prints the release; it holds no signing key. The platform `registry-sync` pipeline finds the tag, resolves the image digest in GHCR and signs the index entry.
 4. Core deploys the newest stable version when the owner installs or updates the app. An update that fails keeps the previous version serving.
 
 Check `publisher` and `source.repo` in the manifest. The repository name must match the image name in `tealbrick-ci.json` (`opt2-tealbrick-inbox`).
